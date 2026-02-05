@@ -1,0 +1,101 @@
+#cloud-config
+
+# https://community.hetzner.com/tutorials/basic-cloud-config
+
+hostname: ${hostname}
+
+users:
+  - name: sysadmin
+    groups: users, admin
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - ${pub_key}
+
+packages:
+  - ufw
+  - unattended-upgrades
+  - docker.io
+  - docker-compose-v2
+  - git
+  - ncdu
+  - htop
+  - iotop
+  - curl
+  - wget
+  - jq
+  - vim
+  - tmux
+
+package_update: true
+package_upgrade: true
+
+# Set timezone
+timezone: Europe/Berlin
+
+# Configure NTP
+ntp:
+  enabled: true
+
+write_files:
+
+  # Add Docker daemon config with logging limits
+  - path: /etc/docker/daemon.json
+    content: |
+      {
+        "iptables": true,
+        "log-driver": "json-file",
+        "log-opts": {
+          "max-size": "10m",
+          "max-file": "3"
+        },
+        "live-restore": true
+      }
+
+  # Add automatic Docker cleanup cron
+  - path: /etc/cron.weekly/docker-cleanup
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      docker system prune -af --filter "until=168h"
+
+  # MOTD with system info
+  - path: /etc/update-motd.d/99-custom
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      echo ""
+      echo "=== System Info ==="
+      echo "Hostname: $$(hostname)"
+      echo "Uptime: $$(uptime -p)"
+      echo "Memory: $$(free -h | awk '/^Mem:/ {print $$3 "/" $$2}')"
+      echo "Disk: $$(df -h / | awk 'NR==2 {print $$3 "/" $$2 " (" $$5 " used)"}')"
+      echo "Docker: $$(docker ps -q 2>/dev/null | wc -l) containers running"
+      echo ""
+
+# Create swap file (2GB)
+swap:
+  filename: /swapfile
+  size: 2G
+  maxsize: 2G
+
+runcmd:
+  # Firewall Setup
+  - ufw allow 443/tcp
+  - ufw allow 41641/udp
+  - ufw allow in on tailscale0
+  - ufw --force enable
+
+  # Docker setup
+  - systemctl restart docker
+  - usermod -aG docker sysadmin
+
+  # Enable Auto-updates
+  - systemctl enable --now unattended-upgrades
+
+  # Tailscale VPN Setup
+  - curl -fsSL https://tailscale.com/install.sh | sh
+  - tailscale up --authkey=${tailscale_key} --ssh --accept-routes
+
+  # Reboot
+  - reboot
