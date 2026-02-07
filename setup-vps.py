@@ -346,8 +346,7 @@ def main() -> None:
             print(f"  ssh -i {SSH_KEY_PATH} sysadmin@{ts_ip}")
     else:
         console.print("[yellow]Could not resolve Tailscale IP[/yellow]")
-        console.print("[cyan]Connect via public IP:[/cyan]")
-        print(f"  ssh -i {SSH_KEY_PATH} sysadmin@{public_ip}")
+        console.print("[cyan]Is Tailscale started on your computer?[/cyan]")
 
 
 if __name__ == "__main__":
