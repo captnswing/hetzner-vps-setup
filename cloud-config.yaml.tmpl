@@ -117,6 +117,11 @@ runcmd:
     # fzf configuration for better UX
     echo 'export FZF_DEFAULT_OPTS="--height 40% --reverse --border"' >> /home/sysadmin/.bashrc
     echo 'export FZF_CTRL_R_OPTS="--preview '\''echo {}\'\'' --preview-window down:3:hidden:wrap --bind '\''?:toggle-preview'\''"' >> /home/sysadmin/.bashrc
+    
+    # Use fd instead of find for faster file discovery with fzf
+    echo 'export FZF_DEFAULT_COMMAND='\''fd --type f --hidden --follow --exclude .git'\''' >> /home/sysadmin/.bashrc
+    echo 'export FZF_ALT_C_COMMAND='\''fd --type d --hidden --follow --exclude .git'\''' >> /home/sysadmin/.bashrc
+    echo 'export FZF_CTRL_T_COMMAND='\''fd --type f --hidden --follow --exclude .git'\''' >> /home/sysadmin/.bashrc
   
   # Make terminfo directory writable by admin group (for Tailscale SSH LocalCommand)
   - chgrp -R admin /usr/share/terminfo
@@ -142,6 +147,21 @@ runcmd:
   # Tailscale VPN Setup
   - curl -fsSL https://tailscale.com/install.sh | sh
   - tailscale up --authkey=${tailscale_key} --ssh --accept-routes
+
+  # Install latest fd (remove conflicting fdclone, download latest from GitHub)
+  - apt remove -y fdclone fd-find
+  - |
+    cd /tmp && \
+    LATEST_VERSION=$(curl -s https://api.github.com/repos/sharkdp/fd/releases/latest | jq -r .tag_name) && \
+    curl -LO "https://github.com/sharkdp/fd/releases/download/${LATEST_VERSION}/fd_${LATEST_VERSION#v}_amd64.deb" && \
+    dpkg -i fd_*_amd64.deb && \
+    rm fd_*_amd64.deb
+
+  # Configure gh CLI authentication (if token provided)
+  - |
+    if [ -n "${github_token}" ]; then
+      sudo -u sysadmin gh auth login --with-token <<< "${github_token}"
+    fi
 
   # Reboot
   - reboot

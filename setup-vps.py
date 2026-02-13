@@ -27,6 +27,7 @@ HCLOUD_TOKEN = os.getenv("HCLOUD_TOKEN")
 SSH_KEY_NAME = os.getenv("SSH_KEY_NAME")
 TAILSCALE_AUTH_KEY = os.getenv("TAILSCALE_AUTH_KEY")
 PUB_KEY = os.getenv("PUB_KEY")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 
 for var in ["HCLOUD_TOKEN", "SSH_KEY_NAME", "PUB_KEY"]:
     if not os.getenv(var):
@@ -312,7 +313,12 @@ def main() -> None:
                 server_type=ServerType(name=server_type),
                 image=Image(name="ubuntu-24.04"),
                 ssh_keys=[ssh_key],
-                user_data=config.substitute(hostname=hostname, pub_key=PUB_KEY, tailscale_key=TAILSCALE_AUTH_KEY),
+                user_data=config.substitute(
+                    hostname=hostname,
+                    pub_key=PUB_KEY,
+                    tailscale_key=TAILSCALE_AUTH_KEY,
+                    github_token=GITHUB_TOKEN,
+                ),
                 location=Location(name=datacenter),
             )
     except APIException as e:
@@ -340,6 +346,16 @@ def main() -> None:
             console.print("\n[cyan]Connect via:[/cyan]")
             # Use print() instead of console.print() to avoid syntax highlighting
             print(f"  ssh -i {SSH_KEY_PATH} sysadmin@{ts_ip}")
+            console.print(f"""
+            Host {hostname}
+                IdentityFile {SSH_KEY_PATH}
+                HostName {ts_ip}
+                User sysadmin
+                SetEnv TERM=xterm-ghostty
+            """)
+            console.print(
+                f"""inform -x | ssh {hostname} "cat > /tmp/terminfo.txt && tic -x - && tic -x -o /usr/share/terminfo /tmp/terminfo.txt && rm -f /tmp/terminfo.txt"""
+            )
         else:
             console.print("[yellow]SSH not ready yet (timeout)[/yellow]")
             console.print("[cyan]Try connecting manually:[/cyan]")
