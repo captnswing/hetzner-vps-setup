@@ -1,0 +1,37 @@
+[project]
+name = "hetzner-vps-setup"
+version = "0.1.0"
+description = "Setup hardened Hetzner VPS instances"
+readme = "README.md"
+authors = [
+  { name = "Frank Hoffsümmer", email = "frank.hoffsummer@gmail.com" },
+]
+requires-python = ">=3.13"
+classifiers = [
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+  "hcloud>=2.16",
+  "python-dotenv>=1.2.1",
+  "questionary>=2.1.1",
+  "rich>=14.3.2",
+]
+
+[dependency-groups]
+dev = [
+  "ruff>=0.14.14",
+]
+
+[tool.ruff]
+# https://docs.astral.sh/ruff/configuration/
+line-length = 120
+# https://docs.astral.sh/ruff/rules/
+lint.select = [
+  "E",   # Error
+  "F",   # pyflakes
+  "I",   # Isort
+  "PTH", # Pathlib
+  "W",   # Warning
+]
