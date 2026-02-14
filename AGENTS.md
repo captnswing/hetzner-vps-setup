@@ -7,9 +7,14 @@ This repository automates provisioning of hardened Ubuntu VPS servers on Hetzner
 **Type**: Python CLI automation script  
 **Purpose**: Interactive VPS provisioning with cloud-init configuration  
 **Runtime**: Python 3.14+ with `uv` package manager  
-**Primary File**: `setup-vps.py` (370 lines)
+**Primary File**: `setup-vps.py` (341 lines)
 
 ## Build & Run Commands
+
+### Install Dependencies
+```bash
+make install
+```
 
 ### Run Script
 ```bash
@@ -24,6 +29,9 @@ uv run setup-vps.py
 
 ### Development Setup
 ```bash
+# Install dependencies
+make install
+
 # Copy environment template
 cp .env.example .env
 
@@ -36,7 +44,9 @@ uv run setup-vps.py
 ```
 
 ### Linting & Formatting
-No configured linters or formatters. Follow existing code style.
+```bash
+make lint  # Runs ruff format and ruff check --fix
+```
 
 ## Code Style Guidelines
 
@@ -218,10 +228,11 @@ if result.returncode == 0:
 
 ## Files You Should Know
 
-- **`setup-vps.py`** - Main provisioning script (370 lines)
+- **`setup-vps.py`** - Main provisioning script (341 lines)
 - **`cloud-config.yaml.tmpl`** - Cloud-init template for server setup (168 lines)
 - **`.env.example`** - Environment variable structure (no secrets)
 - **`README.md`** - User documentation with prerequisites and usage
+- **`Makefile`** - Build automation (install, lint, format targets)
 
 ## Constraints & Gotchas
 

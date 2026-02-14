@@ -25,14 +25,34 @@ SSH_KEY_PATH = Path("~/.ssh/Hetzner_Automation_Key").expanduser()
 
 HCLOUD_TOKEN = os.getenv("HCLOUD_TOKEN")
 SSH_KEY_NAME = os.getenv("SSH_KEY_NAME")
-TAILSCALE_AUTH_KEY = os.getenv("TAILSCALE_AUTH_KEY")
+TAILSCALE_AUTH_KEY = os.getenv("TAILSCALE_AUTH_KEY", "")
 PUB_KEY = os.getenv("PUB_KEY")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 
-for var in ["HCLOUD_TOKEN", "SSH_KEY_NAME", "TAILSCALE_AUTH_KEY", "PUB_KEY"]:
+for var in ["HCLOUD_TOKEN", "SSH_KEY_NAME", "PUB_KEY"]:
     if not os.getenv(var):
         console.print(f"[bold red]Error:[/bold red] {var} not found in environment")
         sys.exit(1)
+
+
+def ask_or_exit(prompt_fn):
+    """Execute questionary prompt and exit gracefully on Ctrl+C."""
+    result = prompt_fn()
+    if result is None:
+        sys.exit(0)
+    return result
+
+
+def prompt_choice(label, items, to_choice_fn, default_value=None):
+    """Generic helper for selecting from a list with spinner loading."""
+    choices = [to_choice_fn(item) for item in items]
+
+    if default_value:
+        default = default_value if any(c.value == default_value for c in choices) else choices[0].value
+    else:
+        default = choices[0].value if choices else None
+
+    return ask_or_exit(lambda: questionary.select(label, choices=choices, default=default, use_arrow_keys=True).ask)
 
 
 def get_tailscale_ip(hostname: str, timeout: int = 300) -> str | None:
@@ -106,29 +126,17 @@ def prompt_hostname(client: Client) -> str:
     """Prompt user for hostname and check availability."""
     first_attempt = True
     while True:
-        if first_attempt:
-            hostname = questionary.text(
-                "Enter hostname",
-                default="hardened-host",
-            ).ask()
-            first_attempt = False
-        else:
-            hostname = questionary.text(
-                "Enter hostname (previous name was taken)",
-                default="hardened-host",
-            ).ask()
+        prompt_msg = "Enter hostname" if first_attempt else "Enter hostname (previous name was taken)"
+        hostname = ask_or_exit(lambda: questionary.text(prompt_msg, default="hardened-host").ask)
+        first_attempt = False
 
-        if hostname is None:  # User pressed Ctrl+C
-            sys.exit(0)
-
-        # Check if hostname already exists
         try:
             existing_server = client.servers.get_by_name(hostname)
             if existing_server:
                 console.print(f"[bold red]✗[/bold red] Hostname '{hostname}' is already taken, please try another name")
                 continue
         except Exception:
-            pass  # Hostname is available
+            pass
 
         console.print(f"[bold green]✓[/bold green] Hostname '{hostname}' is available")
         return hostname
@@ -136,7 +144,6 @@ def prompt_hostname(client: Client) -> str:
 
 def prompt_server_type(client: Client) -> str:
     """Display server type options and prompt for selection."""
-    # Fetch server types from API
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -145,7 +152,6 @@ def prompt_server_type(client: Client) -> str:
         progress.add_task("Loading server types...", total=None)
         server_types = client.server_types.get_all()
 
-    # Filter to common server types and sort
     common_types = ["cx23", "cx33", "cx43", "cpx22", "cpx31", "cpx41"]
     filtered_types = [st for st in server_types if st.name in common_types]
     filtered_types.sort(key=lambda st: st.name)
@@ -154,34 +160,17 @@ def prompt_server_type(client: Client) -> str:
         console.print("[yellow]No server types found, using all available types[/yellow]")
         filtered_types = server_types
 
-    # Build choices for questionary with descriptions
-    choices = [
-        questionary.Choice(
+    def to_choice(st):
+        return questionary.Choice(
             title=f"{st.name:8} - {st.cores} vCPU, {st.memory:3} GB RAM, {st.disk:3} GB storage ({st.cpu_type})",
             value=st.name,
         )
-        for st in filtered_types
-    ]
 
-    # Find default value
-    default_choice = "cx23" if any(st.name == "cx23" for st in filtered_types) else filtered_types[0].name
-
-    server_type = questionary.select(
-        "Select server type:",
-        choices=choices,
-        default=default_choice,
-        use_arrow_keys=True,
-    ).ask()
-
-    if server_type is None:  # User pressed Ctrl+C
-        sys.exit(0)
-
-    return server_type
+    return prompt_choice("Select server type:", filtered_types, to_choice, default_value="cx23")
 
 
 def prompt_datacenter(client: Client) -> str:
     """Display datacenter options and prompt for selection."""
-    # Fetch datacenters from API
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -190,28 +179,13 @@ def prompt_datacenter(client: Client) -> str:
         progress.add_task("Loading datacenters...", total=None)
         datacenters = client.datacenters.get_all()
 
-    # Build choices for questionary with descriptions
-    choices = [
-        questionary.Choice(
+    def to_choice(dc):
+        return questionary.Choice(
             title=f"{dc.location.name:6} - {dc.location.city:15} ({dc.location.country})",
             value=dc.location.name,
         )
-        for dc in datacenters
-    ]
 
-    # Find default
-    default_choice = "hel1" if any(dc.location.name == "hel1" for dc in datacenters) else datacenters[0].location.name
-
-    datacenter = questionary.select(
-        "Select datacenter:",
-        choices=choices,
-        default=default_choice,
-    ).ask()
-
-    if datacenter is None:  # User pressed Ctrl+C
-        sys.exit(0)
-
-    return datacenter
+    return prompt_choice("Select datacenter:", datacenters, to_choice, default_value="hel1")
 
 
 def check_server_type_availability(client: Client, server_type_name: str, datacenter_name: str) -> bool:
@@ -285,10 +259,7 @@ def main() -> None:
     console.print(summary_table)
     console.print()
 
-    proceed = questionary.confirm(
-        "Proceed with server creation?",
-        default=True,
-    ).ask()
+    proceed = ask_or_exit(lambda: questionary.confirm("Proceed with server creation?", default=True).ask)
 
     if not proceed:
         console.print("[yellow]Cancelled by user[/yellow]")
