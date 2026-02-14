@@ -35,9 +35,9 @@ for var in ["HCLOUD_TOKEN", "SSH_KEY_NAME", "PUB_KEY"]:
         sys.exit(1)
 
 
-def ask_or_exit(prompt_fn):
+def ask_or_exit(question):
     """Execute questionary prompt and exit gracefully on Ctrl+C."""
-    result = prompt_fn()
+    result = question.ask()
     if result is None:
         sys.exit(0)
     return result
@@ -52,7 +52,7 @@ def prompt_choice(label, items, to_choice_fn, default_value=None):
     else:
         default = choices[0].value if choices else None
 
-    return ask_or_exit(lambda: questionary.select(label, choices=choices, default=default, use_arrow_keys=True).ask)
+    return ask_or_exit(questionary.select(label, choices=choices, default=default, use_arrow_keys=True))
 
 
 def get_tailscale_ip(hostname: str, timeout: int = 300) -> str | None:
@@ -127,7 +127,7 @@ def prompt_hostname(client: Client) -> str:
     first_attempt = True
     while True:
         prompt_msg = "Enter hostname" if first_attempt else "Enter hostname (previous name was taken)"
-        hostname = ask_or_exit(lambda: questionary.text(prompt_msg, default="hardened-host").ask)
+        hostname = ask_or_exit(questionary.text(prompt_msg, default="hardened-host"))
         first_attempt = False
 
         try:
@@ -259,7 +259,7 @@ def main() -> None:
     console.print(summary_table)
     console.print()
 
-    proceed = ask_or_exit(lambda: questionary.confirm("Proceed with server creation?", default=True).ask)
+    proceed = ask_or_exit(questionary.confirm("Proceed with server creation?", default=True))
 
     if not proceed:
         console.print("[yellow]Cancelled by user[/yellow]")
@@ -325,7 +325,7 @@ def main() -> None:
                 SetEnv TERM=xterm-ghostty
             """)
             console.print(
-                f"""inform -x | ssh {hostname} "cat > /tmp/terminfo.txt && tic -x - """
+                f"""infocmp -x | ssh {hostname} "cat > /tmp/terminfo.txt && tic -x - """
                 f"""&& tic -x -o /usr/share/terminfo /tmp/terminfo.txt && rm -f /tmp/terminfo.txt\""""
             )
         else:
