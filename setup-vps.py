@@ -29,7 +29,7 @@ TAILSCALE_AUTH_KEY = os.getenv("TAILSCALE_AUTH_KEY")
 PUB_KEY = os.getenv("PUB_KEY")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 
-for var in ["HCLOUD_TOKEN", "SSH_KEY_NAME", "PUB_KEY"]:
+for var in ["HCLOUD_TOKEN", "SSH_KEY_NAME", "TAILSCALE_AUTH_KEY", "PUB_KEY"]:
     if not os.getenv(var):
         console.print(f"[bold red]Error:[/bold red] {var} not found in environment")
         sys.exit(1)
@@ -45,7 +45,7 @@ def get_tailscale_ip(hostname: str, timeout: int = 300) -> str | None:
         TextColumn("[progress.description]{task.description}"),
         console=console,
     ) as progress:
-        task = progress.add_task(
+        progress.add_task(
             f"Waiting for Tailscale registration for '{hostname}' (timeout: {timeout}s)...",
             total=None,
         )
@@ -73,7 +73,7 @@ def wait_for_ssh(ip: str, timeout: int = 300) -> bool:
         TextColumn("[progress.description]{task.description}"),
         console=console,
     ) as progress:
-        task = progress.add_task(f"Waiting for SSH on {ip} (timeout: {timeout}s)...", total=None)
+        progress.add_task(f"Waiting for SSH on {ip} (timeout: {timeout}s)...", total=None)
         start = time.time()
         while time.time() - start < timeout:
             try:
@@ -142,7 +142,7 @@ def prompt_server_type(client: Client) -> str:
         TextColumn("[progress.description]{task.description}"),
         console=console,
     ) as progress:
-        task = progress.add_task("Loading server types...", total=None)
+        progress.add_task("Loading server types...", total=None)
         server_types = client.server_types.get_all()
 
     # Filter to common server types and sort
@@ -187,7 +187,7 @@ def prompt_datacenter(client: Client) -> str:
         TextColumn("[progress.description]{task.description}"),
         console=console,
     ) as progress:
-        task = progress.add_task("Loading datacenters...", total=None)
+        progress.add_task("Loading datacenters...", total=None)
         datacenters = client.datacenters.get_all()
 
     # Build choices for questionary with descriptions
@@ -222,7 +222,7 @@ def check_server_type_availability(client: Client, server_type_name: str, datace
             TextColumn("[progress.description]{task.description}"),
             console=console,
         ) as progress:
-            task = progress.add_task("Checking server type availability...", total=None)
+            progress.add_task("Checking server type availability...", total=None)
 
             # Get all server types
             server_types = client.server_types.get_all()
@@ -306,7 +306,7 @@ def main() -> None:
             TextColumn("[progress.description]{task.description}"),
             console=console,
         ) as progress:
-            task = progress.add_task("Provisioning server...", total=None)
+            progress.add_task("Provisioning server...", total=None)
 
             response = client.servers.create(
                 name=hostname,
@@ -354,7 +354,8 @@ def main() -> None:
                 SetEnv TERM=xterm-ghostty
             """)
             console.print(
-                f"""inform -x | ssh {hostname} "cat > /tmp/terminfo.txt && tic -x - && tic -x -o /usr/share/terminfo /tmp/terminfo.txt && rm -f /tmp/terminfo.txt"""
+                f"""inform -x | ssh {hostname} "cat > /tmp/terminfo.txt && tic -x - """
+                f"""&& tic -x -o /usr/share/terminfo /tmp/terminfo.txt && rm -f /tmp/terminfo.txt\""""
             )
         else:
             console.print("[yellow]SSH not ready yet (timeout)[/yellow]")
