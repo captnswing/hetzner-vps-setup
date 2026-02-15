@@ -6,8 +6,8 @@ This repository automates provisioning of hardened Ubuntu VPS servers on Hetzner
 
 **Type**: Python CLI automation script  
 **Purpose**: Interactive VPS provisioning with cloud-init configuration  
-**Runtime**: Python 3.14+ with `uv` package manager  
-**Primary File**: `setup-vps.py` (341 lines)
+**Runtime**: Python 3.13+ with `uv` package manager  
+**Primary File**: `setup-vps.py` (342 lines)
 
 ## Build & Run Commands
 
@@ -25,7 +25,7 @@ source .env
 uv run setup-vps.py
 ```
 
-**Note**: No test suite exists. Manual testing via actual VPS provisioning.
+**Note**: No test suite exists. Manual testing via actual VPS provisioning. The Makefile references a `test` target but it's not implemented.
 
 ### Development Setup
 ```bash
@@ -37,7 +37,7 @@ cp .env.example .env
 
 # Edit .env with your credentials (see .env.example for structure)
 # Required: HCLOUD_TOKEN, SSH_KEY_NAME, PUB_KEY
-# Optional: TAILSCALE_AUTH_KEY, GITHUB_TOKEN
+# Optional: TAILSCALE_AUTH_KEY, GITHUB_TOKEN (for gh CLI + Docker GHCR auto-login)
 
 # Run with uv (handles dependencies automatically)
 uv run setup-vps.py
@@ -45,8 +45,13 @@ uv run setup-vps.py
 
 ### Linting & Formatting
 ```bash
-make lint  # Runs ruff format and ruff check --fix
+make lint    # Runs ruff format and ruff check --fix
+make format  # Runs ruff format only
 ```
+
+**Ruff Configuration** (from `pyproject.toml`):
+- Line length: 120 characters
+- Enabled rules: E (errors), F (pyflakes), I (isort), PTH (prefer pathlib), W (warnings)
 
 ## Code Style Guidelines
 
@@ -134,6 +139,7 @@ make lint  # Runs ruff format and ruff check --fix
 - Access via `os.getenv()` with defaults where appropriate
 - **Always use empty string default** for optional vars: `os.getenv("VAR", "")` (never allow `None` - it renders as `"None"` string in templates)
 - Validate **required** variables at startup (lines 32-35)
+- **Note**: `GITHUB_TOKEN` is optional and not in `.env.example`, but used in cloud-init for gh CLI + Docker GHCR authentication
 
 ### Subprocess Calls
 - Use `subprocess.run()` with `capture_output=True, text=True`
@@ -228,11 +234,12 @@ if result.returncode == 0:
 
 ## Files You Should Know
 
-- **`setup-vps.py`** - Main provisioning script (341 lines)
+- **`setup-vps.py`** - Main provisioning script (342 lines)
 - **`cloud-config.yaml.tmpl`** - Cloud-init template for server setup (168 lines)
-- **`.env.example`** - Environment variable structure (no secrets)
+- **`.env.example`** - Environment variable structure (no secrets, missing GITHUB_TOKEN)
 - **`README.md`** - User documentation with prerequisites and usage
-- **`Makefile`** - Build automation (install, lint, format targets)
+- **`Makefile`** - Build automation (install, lint, format targets; test target not implemented)
+- **`pyproject.toml`** - Python 3.13+ with uv, ruff config, dependencies
 
 ## Constraints & Gotchas
 
