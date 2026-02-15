@@ -157,10 +157,11 @@ runcmd:
     dpkg -i fd_*_amd64.deb && \
     rm fd_*_amd64.deb
 
-  # Configure gh CLI authentication (if token provided)
+  # Configure gh CLI and Docker GHCR authentication (if token provided)
   - |
     if [ -n "${github_token}" ]; then
       sudo -u sysadmin gh auth login --with-token <<< "${github_token}"
+      sudo -u sysadmin sh -c "echo '${github_token}' | docker login ghcr.io -u nobody --password-stdin"
     fi
 
   # Reboot
