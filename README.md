@@ -53,7 +53,8 @@ make install
    export SSH_KEY_NAME=Hetzner Automation Key
    export PUB_KEY=$(op read "op://Private/Hetzner Automation Key/public key")
    export TAILSCALE_AUTH_KEY=$(op read "op://Private/Tailscale Hetzner Auth Key/credential")
-    export GITHUB_TOKEN=$(op read "op://Private/github-token/credential")  # Optional: for gh CLI + Docker GHCR auto-login
+   # Optional: for gh CLI + Docker GHCR auto-login
+   export GITHUB_TOKEN=$(op read "op://Private/github-token/credential")
    ```
 
    **Note**: Uses 1Password CLI (`op`). Replace with direct values if needed. `GITHUB_TOKEN` is optional—omit if you don't need GitHub CLI and Docker GHCR registry pre-authenticated.
