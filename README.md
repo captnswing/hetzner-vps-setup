@@ -94,10 +94,10 @@ Then: `ssh myserver`
 
 First connection only:
 ```bash
-infocmp -x | ssh myserver "cat > /tmp/terminfo.txt && tic -x - && tic -x -o /usr/share/terminfo /tmp/terminfo.txt && rm -f /tmp/terminfo.txt"
+infocmp -x xterm-ghostty | ssh myserver -- tic -x -
 ```
 
-Required for terminal apps (`htop`, `vim`, etc.) and sudo commands.
+Required for proper terminal app display (`htop`, `vim`, etc.).
 
 ## What's Installed
 

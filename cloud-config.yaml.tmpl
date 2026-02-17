@@ -122,10 +122,6 @@ runcmd:
     echo 'export FZF_DEFAULT_COMMAND='\''fd --type f --hidden --follow --exclude .git'\''' >> /home/sysadmin/.bashrc
     echo 'export FZF_ALT_C_COMMAND='\''fd --type d --hidden --follow --exclude .git'\''' >> /home/sysadmin/.bashrc
     echo 'export FZF_CTRL_T_COMMAND='\''fd --type f --hidden --follow --exclude .git'\''' >> /home/sysadmin/.bashrc
-  
-  # Make terminfo directory writable by admin group (for Tailscale SSH LocalCommand)
-  - chgrp -R admin /usr/share/terminfo
-  - chmod -R g+w /usr/share/terminfo
 
   # Disable sudo hint on login (but keep MOTD)
   - touch /home/sysadmin/.sudo_as_admin_successful

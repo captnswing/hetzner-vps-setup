@@ -324,10 +324,8 @@ def main() -> None:
                 User sysadmin
                 SetEnv TERM=xterm-ghostty
             """)
-            console.print(
-                f"""infocmp -x | ssh {hostname} "cat > /tmp/terminfo.txt && tic -x - """
-                f"""&& tic -x -o /usr/share/terminfo /tmp/terminfo.txt && rm -f /tmp/terminfo.txt\""""
-            )
+            console.print(f"\n[cyan]Install Ghostty terminfo (first time only):[/cyan]")
+            print(f"  infocmp -x xterm-ghostty | ssh {hostname} -- tic -x -")
         else:
             console.print("[yellow]SSH not ready yet (timeout)[/yellow]")
             console.print("[cyan]Try connecting manually:[/cyan]")
