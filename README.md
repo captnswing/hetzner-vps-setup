@@ -93,11 +93,14 @@ Then: `ssh myserver`
 ### Ghostty Terminal Support
 
 First connection only:
+
 ```bash
-infocmp -x xterm-ghostty | ssh myserver -- tic -x -
+infocmp -x xterm-ghostty | ssh myserver -- tic -x -o /usr/share/terminfo -
 ```
 
 Required for proper terminal app display (`htop`, `vim`, etc.).
+
+**Why this matters**: The `-o /usr/share/terminfo` flag installs terminfo in the system-wide directory instead of the user's home directory. This ensures that `sudo` commands like `htop` and `iotop` can access the Ghostty terminal definition, since `sudo` may drop user environment variables and paths.
 
 ## What's Installed
 
