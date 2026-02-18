@@ -19,27 +19,28 @@ Automated provisioning of hardened Ubuntu VPS servers on Hetzner Cloud with Tail
    ```
 
 3. **Hetzner API Token** (Read & Write):
-   - Create at [console.hetzner.cloud](https://console.hetzner.cloud/) → Security → API Tokens
-   - Save to 1Password
+    - Create at [console.hetzner.cloud](https://console.hetzner.cloud/) → Security → API Tokens
+    - Save to 1Password
 
 4. **SSH Key**:
    ```bash
    ssh-keygen -t ed25519 -f ~/.ssh/Hetzner_Automation_Key -C "hetzner-automation"
    ```
-   - Upload public key to [Hetzner Console](https://console.hetzner.cloud/) → Security → SSH Keys
-   - Name it: `Hetzner Automation Key` (exact name required)
+    - Upload public key to [Hetzner Console](https://console.hetzner.cloud/) → Security → SSH Keys
+    - Name it: `Hetzner Automation Key` (exact name required)
 
 5. **Tailscale Auth Key** (reusable):
-   - Create at [login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys)
-   - Enable "Reusable" option
+    - Create at [login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys)
+    - Enable "Reusable" option
 
 ## Setup
 
 1. Install dependencies:
 
-```bash
-make install
-```
+   ```bash
+   # this installs uv if it's not already installed, and sets up the virtual environment
+   make install
+   ```
 
 2. Copy `.env.example` to `.env` and configure:
 
@@ -57,7 +58,8 @@ make install
    export GITHUB_TOKEN=$(op read "op://Private/github-token/credential")
    ```
 
-   **Note**: Uses 1Password CLI (`op`). Replace with direct values if needed. `GITHUB_TOKEN` is optional—omit if you don't need GitHub CLI and Docker GHCR registry pre-authenticated.
+   **Note**: Uses 1Password CLI (`op`). Replace with direct values if needed. `GITHUB_TOKEN` is optional—omit if you
+   don't need GitHub CLI and Docker GHCR registry pre-authenticated.
 
 ## Usage
 
@@ -67,6 +69,7 @@ uv run setup-vps.py
 ```
 
 Interactive prompts:
+
 - **Hostname** (default: `hardened-host`)
 - **Server type** (default: `cpx22`)
 - **Datacenter** (default: `hel1`)
@@ -80,6 +83,7 @@ ssh sysadmin@<tailscale-ip>
 ```
 
 **Recommended**: Add to `~/.ssh/config`:
+
 ```
 Host myserver
   HostName <tailscale-ip>
@@ -100,17 +104,21 @@ infocmp -x xterm-ghostty | ssh myserver -- tic -x -o /usr/share/terminfo -
 
 Required for proper terminal app display (`htop`, `vim`, etc.).
 
-**Why this matters**: The `-o /usr/share/terminfo` flag installs terminfo in the system-wide directory instead of the user's home directory. This ensures that `sudo` commands like `htop` and `iotop` can access the Ghostty terminal definition, since `sudo` may drop user environment variables and paths.
+**Why this matters**: The `-o /usr/share/terminfo` flag installs terminfo in the system-wide directory instead of the
+user's home directory. This ensures that `sudo` commands like `htop` and `iotop` can access the Ghostty terminal
+definition, since `sudo` may drop user environment variables and paths.
 
 ## What's Installed
 
 ### System
+
 - **OS**: Ubuntu 24.04 LTS
 - **User**: `sysadmin` (passwordless sudo, docker group)
 - **Timezone**: Europe/Berlin
 - **Swap**: 2GB
 
 ### Packages
+
 - **Tools**: git, curl, wget, jq, vim, tmux, ripgrep, fzf, gh
 - **Monitoring**: htop, iotop, ncdu
 - **Docker**: docker.io, docker-compose-v2
@@ -118,13 +126,15 @@ Required for proper terminal app display (`htop`, `vim`, etc.).
 - **VPN**: Tailscale (with SSH enabled)
 
 ### Shell Features
+
 - **History**: 50k commands in memory, 100k on disk, timestamped
 - **fzf shortcuts**:
-  - `Ctrl+R` - Fuzzy command history search
-  - `Ctrl+T` - File finder
-  - `Alt+C` - Directory finder
+    - `Ctrl+R` - Fuzzy command history search
+    - `Ctrl+T` - File finder
+    - `Alt+C` - Directory finder
 
 ### Security
+
 - **UFW**: Only ports 443/tcp and 41641/udp (Tailscale) open
 - **Tailscale SSH**: VPN-only access, no public SSH
 - **Auto-updates**: Security patches via unattended-upgrades
