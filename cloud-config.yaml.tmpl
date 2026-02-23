@@ -29,6 +29,7 @@ packages:
   - ripgrep
   - gh
   - fzf
+  - build-essential
 
 package_update: true
 package_upgrade: true
@@ -147,6 +148,9 @@ runcmd:
   # Tailscale VPN Setup
   - curl -fsSL https://tailscale.com/install.sh | sh
   - tailscale up --authkey=${tailscale_key} --ssh --accept-routes
+
+  # Claude-Code Setup
+  - curl -fsSL https://claude.ai/install.sh | bash
 
   # Install latest fd (remove conflicting fdclone, download latest from GitHub)
   - apt remove -y fdclone fd-find
