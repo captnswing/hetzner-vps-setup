@@ -89,24 +89,19 @@ Host myserver
   HostName <tailscale-ip>
   User sysadmin
   IdentityFile ~/.ssh/Hetzner_Automation_Key
-  SetEnv TERM=xterm-ghostty
 ```
 
 Then: `ssh myserver`
 
 ### Ghostty Terminal Support
 
-First connection only:
+See https://ghostty.org/docs/help/terminfo. In `~/.config/ghostty/config`, set
 
-```bash
-infocmp -x xterm-ghostty | ssh myserver -- tic -x -o /usr/share/terminfo -
+```
+shell-integration-features = ssh-terminfo,ssh-env
 ```
 
 Required for proper terminal app display (`htop`, `vim`, etc.).
-
-**Why this matters**: The `-o /usr/share/terminfo` flag installs terminfo in the system-wide directory instead of the
-user's home directory. This ensures that `sudo` commands like `htop` and `iotop` can access the Ghostty terminal
-definition, since `sudo` may drop user environment variables and paths.
 
 ## What's Installed
 
@@ -147,8 +142,6 @@ definition, since `sudo` may drop user environment variables and paths.
 **Hostname already taken**: Choose different name (unique per Hetzner account).
 
 **Tailscale IP not found**: Ensure `tailscale status` shows your tailnet is active.
-
-**Terminal errors** (`Error opening terminal: xterm-ghostty`): Run the terminfo install command above.
 
 ## Files
 

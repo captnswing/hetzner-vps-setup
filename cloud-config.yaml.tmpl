@@ -89,11 +89,6 @@ runcmd:
   - chown -R sysadmin:sysadmin /home/sysadmin
   - chmod 755 /home/sysadmin
 
-  # Setup Ghostty terminal support
-  - |
-    # Modify default .bashrc to support ghostty colors earlier in the file
-    sed -i '/xterm-color|\*-256color) color_prompt=yes;;/a\    xterm-ghostty) color_prompt=yes; export COLORTERM=truecolor;;' /home/sysadmin/.bashrc
-  
   # Enhance bash history configuration
   - |
     # Increase history size limits
@@ -124,7 +119,7 @@ runcmd:
     echo 'export FZF_ALT_C_COMMAND='\''fd --type d --hidden --follow --exclude .git'\''' >> /home/sysadmin/.bashrc
     echo 'export FZF_CTRL_T_COMMAND='\''fd --type f --hidden --follow --exclude .git'\''' >> /home/sysadmin/.bashrc
 
-  # Make terminfo directory writable by admin group (to copy Ghostty terminfo files later)
+  # Make terminfo directory writable by admin group (to allow copy of Ghostty terminfo files later)
   - chgrp -R admin /usr/share/terminfo
   - chmod -R g+w /usr/share/terminfo
 
