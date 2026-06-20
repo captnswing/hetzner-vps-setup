@@ -42,24 +42,19 @@ Automated provisioning of hardened Ubuntu VPS servers on Hetzner Cloud with Tail
    make install
    ```
 
-2. Copy `.env.example` to `.env` and configure:
+2. Secrets are referenced (not stored) in the committed `.op.env` and injected
+   lazily by `op run` — `HCLOUD_TOKEN`, `PUB_KEY`, `TAILSCALE_AUTH_KEY`, and the
+   optional `GITHUB_TOKEN`. The non-secret `SSH_KEY_NAME` lives in `.envrc`
+   (direnv). Run the deploy with the secrets injected for that command only:
 
    ```bash
-   cp .env.example .env
+   direnv allow                       # loads SSH_KEY_NAME (no secrets)
+   op-run -- ./deploy.sh              # or: op run --env-file=.op.env -- ./deploy.sh
    ```
 
-   Edit `.env`:
-   ```bash
-   export HCLOUD_TOKEN=$(op read "op://Private/your-hetzner-token/credential")
-   export SSH_KEY_NAME=Hetzner Automation Key
-   export PUB_KEY=$(op read "op://Private/Hetzner Automation Key/public key")
-   export TAILSCALE_AUTH_KEY=$(op read "op://Private/Tailscale Hetzner Auth Key/credential")
-   # Optional: for gh CLI + Docker GHCR auto-login
-   export GITHUB_TOKEN=$(op read "op://Private/github-token/credential")
-   ```
-
-   **Note**: Uses 1Password CLI (`op`). Replace with direct values if needed. `GITHUB_TOKEN` is optional—omit if you
-   don't need GitHub CLI and Docker GHCR registry pre-authenticated.
+   See `~/Developer/private/dotfiles/docs/secrets-management.md` for the pattern.
+   `GITHUB_TOKEN` is optional—omit from `.op.env` if you don't need GitHub CLI /
+   Docker GHCR registry pre-authenticated.
 
 ## Usage
 
