@@ -52,7 +52,10 @@ Automated provisioning of hardened Ubuntu VPS servers on Hetzner Cloud with Tail
    op-run -- ./deploy.sh              # or: op run --env-file=.op.env -- ./deploy.sh
    ```
 
-   See `~/Developer/private/dotfiles/docs/secrets-management.md` for the pattern.
+   The pattern: `.op.env` holds only 1Password secret *references* (e.g.
+   `op://vault/item/field`), never the secrets themselves, so it's safe to commit;
+   `op run` resolves them at runtime for that single command. See the
+   [1Password `op run` docs](https://developer.1password.com/docs/cli/secrets-environment-variables/).
    `GITHUB_TOKEN` is optional—omit from `.op.env` if you don't need GitHub CLI /
    Docker GHCR registry pre-authenticated.
 
