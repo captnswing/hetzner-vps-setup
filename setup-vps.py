@@ -32,7 +32,7 @@ TAILSCALE_AUTH_KEY = os.getenv("TAILSCALE_AUTH_KEY", "")
 PUB_KEY = os.getenv("PUB_KEY")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 
-for var in ["HCLOUD_TOKEN", "SSH_KEY_NAME", "PUB_KEY"]:
+for var in ["HCLOUD_TOKEN", "SSH_KEY_NAME"]:
     if not os.getenv(var):
         console.print(f"[bold red]Error:[/bold red] {var} not found in environment")
         sys.exit(1)
@@ -125,6 +125,67 @@ def print_connection_info(hostname: str, ip: str) -> None:
     console.print("\n[bold cyan]Scan to connect from your phone[/bold cyan] (any SSH client):")
     print_ssh_qr(SSH_USER, ip)
     console.print(f"[dim]Encodes ssh://{SSH_USER}@{ip}[/dim]")
+
+
+def generate_keypair() -> str | None:
+    """ssh-keygen a new ed25519 keypair at SSH_KEY_PATH; return its public key text."""
+    SSH_KEY_PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        subprocess.run(
+            ["ssh-keygen", "-t", "ed25519", "-f", str(SSH_KEY_PATH), "-N", "", "-C", "hetzner-automation"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        console.print("[bold red]ssh-keygen not found.[/bold red]")
+        return None
+    except subprocess.CalledProcessError as e:
+        console.print(f"[bold red]ssh-keygen failed:[/bold red] {e.stderr.strip()}")
+        return None
+    console.print(f"[bold green]✓[/bold green] Generated keypair at {SSH_KEY_PATH}")
+    return Path(f"{SSH_KEY_PATH}.pub").read_text().strip()
+
+
+def resolve_public_key_material() -> str | None:
+    """Find public-key text to upload: $PUB_KEY, a local .pub, or a freshly generated keypair."""
+    if PUB_KEY and PUB_KEY.startswith(("ssh-", "ecdsa-", "sk-")):
+        console.print("[cyan]Using public key from $PUB_KEY.[/cyan]")
+        return PUB_KEY.strip()
+
+    pub_path = Path(f"{SSH_KEY_PATH}.pub")
+    if pub_path.exists():
+        console.print(f"[cyan]Using public key from {pub_path}.[/cyan]")
+        return pub_path.read_text().strip()
+
+    if ask_or_exit(
+        questionary.confirm(f"No public key available. Generate a new ed25519 keypair at {SSH_KEY_PATH}?", default=True)
+    ):
+        return generate_keypair()
+    return None
+
+
+def ensure_ssh_key(client: Client):
+    """Return the Hetzner SSH key named SSH_KEY_NAME, creating + uploading it if absent."""
+    existing = client.ssh_keys.get_by_name(SSH_KEY_NAME)
+    if existing:
+        return existing
+
+    console.print(f"[yellow]SSH key '{SSH_KEY_NAME}' is not in your Hetzner account yet.[/yellow]")
+    pub_text = resolve_public_key_material()
+    if not pub_text:
+        console.print("[bold red]Cannot proceed without an SSH key.[/bold red]")
+        sys.exit(1)
+
+    if not ask_or_exit(questionary.confirm(f"Upload this public key to Hetzner as '{SSH_KEY_NAME}'?", default=True)):
+        sys.exit(0)
+    try:
+        created = client.ssh_keys.create(name=SSH_KEY_NAME, public_key=pub_text)
+    except APIException as e:
+        console.print(f"[bold red]Failed to upload SSH key:[/bold red] {e.code} - {e.message}")
+        sys.exit(1)
+    console.print(f"[bold green]✓[/bold green] Uploaded SSH key '{SSH_KEY_NAME}' to Hetzner.")
+    return created
 
 
 def get_tailscale_ip(hostname: str, timeout: int = 300) -> str | None:
@@ -306,11 +367,11 @@ def main() -> None:
 
     client = Client(token=HCLOUD_TOKEN)
 
-    # Verify SSH key exists
-    ssh_key = client.ssh_keys.get_by_name(SSH_KEY_NAME)
-    if not ssh_key:
-        console.print(f"[bold red]Error:[/bold red] SSH key '{SSH_KEY_NAME}' not found in Hetzner account")
-        sys.exit(1)
+    # Ensure the SSH key exists in Hetzner (create + upload it if missing)
+    ssh_key = ensure_ssh_key(client)
+    # Source the public key from Hetzner so the key installed on the box always
+    # matches the one Hetzner has on file (whether it pre-existed or we just uploaded it).
+    pub_key_text = ssh_key.public_key
 
     # Interactive prompts
     hostname = prompt_hostname(client)
@@ -368,7 +429,7 @@ def main() -> None:
                 ssh_keys=[ssh_key],
                 user_data=config.substitute(
                     hostname=hostname,
-                    pub_key=PUB_KEY,
+                    pub_key=pub_key_text,
                     tailscale_key=TAILSCALE_AUTH_KEY,
                     github_token=GITHUB_TOKEN,
                 ),
