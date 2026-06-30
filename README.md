@@ -2,84 +2,89 @@
 
 Automated provisioning of hardened Ubuntu VPS servers on Hetzner Cloud with Tailscale VPN, Docker, and developer tools.
 
-## Prerequisites
-
-1. **uv** (Python package manager):
-   ```bash
-   curl -LsSf https://astral.sh/uv/install.sh | sh
-   # Or via Homebrew:
-   brew install uv
-   ```
-
-2. **Tailscale CLI** (for VPN IP resolution):
-   ```bash
-   brew install tailscale
-   open -a Tailscale  # Authenticate
-   tailscale status   # Verify
-   ```
-
-3. **Hetzner API Token** (Read & Write):
-    - Create at [console.hetzner.cloud](https://console.hetzner.cloud/) → Security → API Tokens
-    - Save to 1Password
-
-4. **SSH Key**:
-   ```bash
-   ssh-keygen -t ed25519 -f ~/.ssh/Hetzner_Automation_Key -C "hetzner-automation"
-   ```
-    - Upload public key to [Hetzner Console](https://console.hetzner.cloud/) → Security → SSH Keys
-    - Name it: `Hetzner Automation Key` (exact name required)
-
-5. **Tailscale Auth Key** (reusable, tagged):
-    - First, define the tag owner once in your ACL at
-      [login.tailscale.com/admin/acls](https://login.tailscale.com/admin/acls):
-      ```json
-      "tagOwners": { "tag:vps": ["autogroup:admin"] }
-      ```
-    - Create the key at [login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys)
-    - Enable **Reusable**; under **Tags**, select `tag:vps` (leave *Ephemeral* off —
-      these are persistent boxes). Tagged nodes get ACL scoping and don't hit the
-      180-day key-expiry re-auth.
-
-## Setup
-
-1. Install dependencies:
-
-   ```bash
-   # this installs uv if it's not already installed, and sets up the virtual environment
-   make install
-   ```
-
-2. Secrets are referenced (not stored) in the committed `.op.env` and injected
-   lazily by `op run` — `HCLOUD_TOKEN`, `PUB_KEY`, `TAILSCALE_AUTH_KEY`, and the
-   optional `GITHUB_TOKEN`. The non-secret `SSH_KEY_NAME` lives in `.envrc`
-   (direnv). Run the deploy with the secrets injected for that command only:
-
-   ```bash
-   direnv allow                       # loads SSH_KEY_NAME (no secrets)
-   op-run -- ./deploy.sh              # or: op run --env-file=.op.env -- ./deploy.sh
-   ```
-
-   The pattern: `.op.env` holds only 1Password secret *references* (e.g.
-   `op://vault/item/field`), never the secrets themselves, so it's safe to commit;
-   `op run` resolves them at runtime for that single command. See the
-   [1Password `op run` docs](https://developer.1password.com/docs/cli/secrets-environment-variables/).
-   `GITHUB_TOKEN` is optional—omit from `.op.env` if you don't need GitHub CLI /
-   Docker GHCR registry pre-authenticated.
-
-## Usage
+## Quick start
 
 ```bash
-source .env
+brew bundle             # installs uv + tailscale (or install them yourself)
+open -a Tailscale       # sign in to your tailnet
+make install            # set up the Python environment
+cp .env.example .env    # then fill in your Hetzner + Tailscale credentials
+make doctor             # verify everything is ready
+uv run setup-vps.py     # provision
+```
+
+First time through, read **What you need** below for the accounts, credentials, and
+the one-time Tailscale tag setup. `make doctor` will tell you exactly what's missing.
+
+## What you need
+
+### Accounts
+
+- **Hetzner Cloud** — [console.hetzner.cloud](https://console.hetzner.cloud/)
+- **Tailscale** — [login.tailscale.com](https://login.tailscale.com/) (free for personal use)
+
+### Local tools
+
+`brew bundle` installs both, or install manually:
+
+- **uv** — `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- **Tailscale CLI** — `brew install tailscale`, then `open -a Tailscale` to sign in
+  and `tailscale status` to verify.
+
+### Credentials → `.env`
+
+Copy the template and fill it in — `.env` is gitignored and loaded automatically
+(no need to `source` it):
+
+```bash
+cp .env.example .env
+```
+
+1. **`HCLOUD_TOKEN`** — Hetzner API token (Read & Write):
+   [console.hetzner.cloud](https://console.hetzner.cloud/) → Security → API Tokens.
+2. **`SSH_KEY_NAME`** — the name your SSH key has (or will have) in Hetzner; default
+   `Hetzner Automation Key`. **You don't have to pre-create the key:** if none by that
+   name exists, `setup-vps.py` offers to upload `$PUB_KEY`, an existing
+   `~/.ssh/Hetzner_Automation_Key.pub`, or to generate a fresh keypair for you.
+   - **`PUB_KEY`** (optional) — public-key text to upload if the key must be created.
+3. **`TAILSCALE_AUTH_KEY`** — reusable, tagged `tag:vps`, non-ephemeral. One-time setup:
+   - Define the tag owner once in your ACL
+     ([login.tailscale.com/admin/acls](https://login.tailscale.com/admin/acls)):
+     ```json
+     "tagOwners": { "tag:vps": ["autogroup:admin"] }
+     ```
+   - Generate the key
+     ([login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys)):
+     **Reusable** on, **Tags** → `tag:vps`, **Ephemeral** off. Tagged nodes get ACL
+     scoping and skip the 180-day key-expiry re-auth.
+
+`GITHUB_TOKEN` is optional (gh CLI / GHCR auto-login on the box).
+
+> **Advanced (maintainer's setup):** instead of a `.env`, secrets can be injected at
+> point-of-use from 1Password via `op-run` (a personal wrapper) reading the committed
+> `.op.env`. That file holds only 1Password *references* (`op://vault/item/field`),
+> never the secrets themselves, so it's safe to commit; `op run` resolves them at
+> runtime for that single command (see the
+> [1Password `op run` docs](https://developer.1password.com/docs/cli/secrets-environment-variables/)).
+> This is personal and optional — if you don't already use that workflow, the `.env`
+> path above is all you need. Run any command with secrets injected as
+> `op-run -- <cmd>` (e.g. `op-run -- make doctor`, `op-run -- uv run setup-vps.py`).
+
+## Provision
+
+```bash
+make doctor             # preflight: tools, credentials, valid token, SSH key
 uv run setup-vps.py
 ```
 
-Interactive prompts:
+`doctor` reports exactly what's missing for anything not ready. The provisioner then
+prompts for:
 
 - **Hostname** (default: `hardened-host`)
-- **Server type** (default: `cpx22`)
+- **Server type** (default: `cx23`, with estimated monthly cost shown)
 - **Datacenter** (default: `hel1`)
 
-Outputs Tailscale VPN IP for SSH access.
+and prints the Tailscale VPN IP for SSH access when done.
 
 ## Connect
 
@@ -178,7 +183,9 @@ Required for proper terminal app display (`htop`, `vim`, etc.).
 
 ## Troubleshooting
 
-**SSH key not found**: Key name in Hetzner must match `SSH_KEY_NAME` exactly.
+**SSH key**: if no Hetzner key matches `SSH_KEY_NAME`, the script offers to create &
+upload one. If you already have a key under a *different* name, set `SSH_KEY_NAME` to
+match it exactly (names are case-sensitive).
 
 **Hostname already taken**: Choose different name (unique per Hetzner account).
 
@@ -187,5 +194,8 @@ Required for proper terminal app display (`htop`, `vim`, etc.).
 ## Files
 
 - `setup-vps.py` - Provisioning script
+- `doctor.py` - Preflight check (`make doctor`)
 - `cloud-config.yaml.tmpl` - Cloud-init template
-- `.env.example` - Environment variable template
+- `Brewfile` - Local tools (`brew bundle`)
+- `.env.example` - Environment variable template (copy to `.env`)
+- `.op.env` - Maintainer's 1Password references (optional; ignore if not using `op-run`)

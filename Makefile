@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := all
-.PHONY: all install format lint test statement data spreadsheet streamlit ensure-uv
+.PHONY: all install doctor format lint test statement data spreadsheet streamlit ensure-uv
 
 all: test
 
@@ -19,6 +19,10 @@ uv.lock: pyproject.toml | ensure-uv
 
 install: uv.lock
 	uv sync
+
+# Preflight check. Plain-.env users: `make doctor`. Maintainer: `op-run -- make doctor`.
+doctor: install
+	uv run python doctor.py
 
 format: install
 	uv run ruff format .
