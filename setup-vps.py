@@ -20,7 +20,11 @@ from rich.table import Table
 
 load_dotenv(".env")
 
-console = Console()
+# `op run` pipes stdout (to mask secrets), so Rich sees a non-tty and drops color.
+# When a real terminal is still attached via stdin, force color on; leave it to Rich's
+# auto-detection otherwise (so genuine redirection / CI stays plain).
+_force_color = True if (not sys.stdout.isatty() and sys.stdin.isatty()) else None
+console = Console(force_terminal=_force_color)
 
 SSH_KEY_PATH = Path("~/.ssh/Hetzner_Automation_Key").expanduser()
 SSH_USER = "sysadmin"
