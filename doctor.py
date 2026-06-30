@@ -12,6 +12,7 @@ Exit status is 0 when every required check passes, 1 otherwise.
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -20,7 +21,11 @@ from rich.table import Table
 
 load_dotenv(".env")
 
-console = Console()
+# `op run` pipes stdout (to mask secrets), so Rich sees a non-tty and drops color.
+# When a real terminal is still attached via stdin, force color on; leave it to Rich's
+# auto-detection otherwise (so genuine redirection / CI stays plain).
+_force_color = True if (not sys.stdout.isatty() and sys.stdin.isatty()) else None
+console = Console(force_terminal=_force_color)
 
 # PUB_KEY is intentionally not required: setup-vps.py can source the public key from
 # the existing Hetzner key, a local .pub, or by generating a fresh keypair.
