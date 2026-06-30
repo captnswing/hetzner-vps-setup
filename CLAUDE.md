@@ -7,7 +7,7 @@ This repository automates provisioning of hardened Ubuntu VPS servers on Hetzner
 **Type**: Python CLI automation script  
 **Purpose**: Interactive VPS provisioning with cloud-init configuration  
 **Runtime**: Python 3.13+ with `uv` package manager  
-**Primary File**: `setup-vps.py` (342 lines)
+**Primary File**: `setup-vps.py` (~480 lines)
 
 ## Build & Run Commands
 
@@ -18,14 +18,13 @@ make install
 
 ### Run Script
 ```bash
-# Source environment first (required)
-source .env
-
-# Run the script
+# .env is loaded automatically by python-dotenv — no need to `source` it.
 uv run setup-vps.py
 ```
 
-**Note**: No test suite exists. Manual testing via actual VPS provisioning. The Makefile references a `test` target but it's not implemented.
+**Note**: No test suite exists. Manual testing happens via actual VPS provisioning.
+`make`/`make test` (`all: test`) have no real recipe — `make install`, `make doctor`,
+`make format`, and `make lint` are the working targets.
 
 ### Development Setup
 ```bash
@@ -35,9 +34,13 @@ make install
 # Copy environment template
 cp .env.example .env
 
-# Edit .env with your credentials (see .env.example for structure)
+# Edit .env with your credentials (see .env.example for inline docs)
 # Required: HCLOUD_TOKEN, SSH_KEY_NAME, PUB_KEY
-# Optional: TAILSCALE_AUTH_KEY, GITHUB_TOKEN (for gh CLI + Docker GHCR auto-login)
+# Optional: TAILSCALE_AUTH_KEY, GITHUB_TOKEN (gh CLI + Docker GHCR auto-login)
+
+# Preflight check — verifies env, tokens, and tooling before provisioning
+make doctor          # plain-.env users
+# op-run -- make doctor   # maintainer 1Password path (see README "Advanced")
 
 # Run with uv (handles dependencies automatically)
 uv run setup-vps.py
@@ -45,8 +48,8 @@ uv run setup-vps.py
 
 ### Linting & Formatting
 ```bash
-make lint    # Runs ruff format and ruff check --fix
-make format  # Runs ruff format only
+make lint    # depends on format, then runs ruff check --fix
+make format  # runs ruff format only
 ```
 
 **Ruff Configuration** (from `pyproject.toml`):
@@ -68,9 +71,11 @@ make format  # Runs ruff format only
   from pathlib import Path
   from string import Template
 
+  import qrcode
   import questionary
   from dotenv import load_dotenv
   from hcloud import Client
+  from hcloud._exceptions import APIException
   from rich.console import Console
   ```
 
@@ -86,9 +91,9 @@ make format  # Runs ruff format only
 
 ### Naming Conventions
 - **Variables/functions**: `snake_case` (e.g., `public_ip`, `wait_for_ssh`)
-- **Constants**: `SCREAMING_SNAKE_CASE` (e.g., `HCLOUD_TOKEN`, `SSH_KEY_PATH`)
+- **Constants**: `SCREAMING_SNAKE_CASE` (e.g., `HCLOUD_TOKEN`, `PUB_KEY`)
 - **Classes**: `PascalCase` (none in this project, but follow if adding)
-- **Private/internal**: prefix with `_` (not used currently)
+- **Private/internal**: prefix with `_` (e.g., `_attr`, `_monthly_gross`)
 
 ### Docstrings
 - Use triple-quoted strings for function/class documentation
@@ -121,13 +126,14 @@ make format  # Runs ruff format only
 
 ### User Interaction
 - **Use `questionary`** for interactive prompts (text input, select, confirm)
+  - `ask_or_exit()` wraps a questionary prompt and exits cleanly on `Ctrl+C` (None return)
+  - `prompt_choice()` is the shared helper for select-from-list prompts
 - **Use Rich** for output formatting:
   - `console.print()` for styled output
   - `Progress` with spinners for API calls
   - `Table` for structured data display
   - `Panel` for section headers
 - Validate user input (e.g., hostname availability check)
-- Allow `Ctrl+C` to exit gracefully: check for `None` return from questionary
 
 ### File Operations
 - Use **`pathlib.Path`** (not `os.path`)
@@ -135,17 +141,17 @@ make format  # Runs ruff format only
 - Read files: `Path("file.txt").read_text()`
 
 ### Environment Variables
-- Load with `python-dotenv`: `load_dotenv(".env")`
+- Load with `python-dotenv`: `load_dotenv(".env")` (done once at module top)
 - Access via `os.getenv()` with defaults where appropriate
-- **Always use empty string default** for optional vars: `os.getenv("VAR", "")` (never allow `None` - it renders as `"None"` string in templates)
-- Validate **required** variables at startup (lines 32-35)
-- **Note**: `GITHUB_TOKEN` is optional and not in `.env.example`, but used in cloud-init for gh CLI + Docker GHCR authentication
+- **Always use empty string default** for optional vars: `os.getenv("VAR", "")` (never allow `None` — it renders as the `"None"` string in templates). See `TAILSCALE_AUTH_KEY`, `GITHUB_TOKEN`.
+- Validate **required** variables at startup (`HCLOUD_TOKEN`, `SSH_KEY_NAME`, `PUB_KEY`)
+- Both `TAILSCALE_AUTH_KEY` and `GITHUB_TOKEN` are documented in `.env.example` (optional, may be left blank)
 
 ### Subprocess Calls
 - Use `subprocess.run()` with `capture_output=True, text=True`
 - Set timeouts to prevent hanging: `timeout=10`
 - Check `returncode` for success/failure
-- Handle `FileNotFoundError` for missing binaries (e.g., `tailscale`)
+- Handle `FileNotFoundError` for missing binaries (e.g., `tailscale`, `ssh-keygen`)
 
 ### Progress Indication
 - **Always use Rich Progress** for long-running operations (API calls, SSH waits)
@@ -165,30 +171,35 @@ make format  # Runs ruff format only
 ## Architecture & Patterns
 
 ### Script Structure
-1. **Imports & globals** (lines 1-36)
-2. **Helper functions** (lines 38-254)
-   - `get_tailscale_ip()` - Poll for VPN IP
-   - `wait_for_ssh()` - Check SSH availability
-   - `prompt_*()` - Interactive user input
-   - `check_server_type_availability()` - Validation
-3. **Main function** (lines 256-366)
+1. **Imports & globals** — env loading, required-var validation
+2. **Helper functions**, including:
+   - `ask_or_exit()` / `prompt_choice()` — questionary wrappers
+   - `generate_keypair()` / `resolve_public_key_material()` / `ensure_ssh_key()` — SSH key auto-create + upload to Hetzner
+   - `print_ssh_qr()` / `maybe_write_ssh_config()` / `print_connection_info()` — post-provision UX (QR for mobile, `~/.ssh/config` entry)
+   - `server_type_min_cost()` / `server_type_cost_at()` — pricing helpers for the picker
+   - `get_tailscale_ip()` — poll for VPN IP
+   - `wait_for_ssh()` — check SSH availability
+   - `prompt_hostname()` / `prompt_server_type()` / `prompt_datacenter()` — interactive input
+   - `check_server_type_availability()` — validation
+3. **Main function** (`main()`)
    - Linear workflow: validate → prompt → create → wait → output
 
 ### Key External Dependencies
-- **hcloud**: Hetzner Cloud API client
+- **hcloud**: Hetzner Cloud API client (`Client`, `APIException`, `Image`, `Location`, `ServerType`)
 - **questionary**: Interactive prompts
 - **rich**: Terminal formatting and progress
-- **dotenv**: Environment variable loading
+- **qrcode**: Render an SSH-connect QR for mobile clients
+- **python-dotenv**: Environment variable loading
 
 ### Security Considerations
-- **Never commit `.env`** - contains secrets
+- **Never commit `.env`** — contains secrets (gitignored)
 - Use `.env.example` for structure documentation
-- SSH keys loaded from environment, not hardcoded
+- SSH keys loaded from environment, not hardcoded; key material can also be auto-generated locally
 - Firewall (UFW) configured via cloud-init
 - Tailscale provides VPN-only access (no public SSH)
 
 ### Cloud-Init Workflow
-- Script generates `user_data` from template
+- Script generates `user_data` from template via `config.substitute(...)` in `main()`
 - Hetzner provisions server with Ubuntu 24.04
 - cloud-init runs setup commands on first boot
 - Server reboots after configuration complete
@@ -206,9 +217,7 @@ with Progress(...) as progress:
 ### Interactive Prompts with Validation
 ```python
 while True:
-    value = questionary.text("Enter value:").ask()
-    if value is None:  # Ctrl+C
-        sys.exit(0)
+    value = ask_or_exit(questionary.text("Enter value:"))  # exits on Ctrl+C
     if validate(value):
         break
     console.print("[bold red]Invalid, try again[/bold red]")
@@ -234,55 +243,62 @@ if result.returncode == 0:
 
 ## Files You Should Know
 
-- **`setup-vps.py`** - Main provisioning script (342 lines)
-- **`cloud-config.yaml.tmpl`** - Cloud-init template for server setup (168 lines)
-- **`.env.example`** - Environment variable structure (no secrets, missing GITHUB_TOKEN)
-- **`README.md`** - User documentation with prerequisites and usage
-- **`Makefile`** - Build automation (install, lint, format targets; test target not implemented)
-- **`pyproject.toml`** - Python 3.13+ with uv, ruff config, dependencies
+- **`setup-vps.py`** — Main provisioning script (~480 lines)
+- **`cloud-config.yaml.tmpl`** — Cloud-init template for server setup (~186 lines)
+- **`doctor.py`** — Preflight checker run by `make doctor`
+- **`.env.example`** — Environment variable structure with inline docs (no secrets)
+- **`README.md`** — User documentation with prerequisites and usage
+- **`ROADMAP.md`** — Planned work / future direction
+- **`Makefile`** — Build automation (`install`, `doctor`, `format`, `lint`; `test` not implemented)
+- **`pyproject.toml`** — Python 3.13+ with uv, ruff config, dependencies
 
 ## Constraints & Gotchas
 
 1. **Requires active Tailscale daemon** on local machine for IP resolution
 2. **Hetzner API token** must have Read & Write permissions
-3. **SSH key name** in Hetzner must match `SSH_KEY_NAME` exactly
+3. **SSH key name** in Hetzner must match `SSH_KEY_NAME` exactly (the script can auto-create + upload one if missing)
 4. **Hostname uniqueness** checked before creation (per Hetzner account)
-5. **No rollback** - failed provisions leave orphaned resources (manual cleanup)
-6. **Cloud-init takes ~3-5 minutes** - script polls for readiness
-7. **uv handles dependencies** - no pip install needed
+5. **No rollback** — failed provisions leave orphaned resources (manual cleanup)
+6. **Cloud-init takes ~3-5 minutes** — script polls for readiness
+7. **uv handles dependencies** — no pip install needed
 
 ## Making Changes
 
 ### Adding New Prompts
 1. Create `prompt_*()` function following existing pattern
-2. Add questionary interaction with validation loop
-3. Return value or `sys.exit(0)` on cancel
+2. Use `ask_or_exit()` / `prompt_choice()` so `Ctrl+C` exits cleanly
+3. Validate in a loop where applicable
 4. Call from `main()` before server creation
 
 ### Modifying Cloud-Init
 1. Edit `cloud-config.yaml.tmpl` (YAML syntax)
 2. Add placeholders: `${variable_name}`
-3. Update `config.substitute()` call in `main()` (line 316-321)
-4. Test with `uv run setup-vps.py` (provisions real server)
+3. Update the `config.substitute(...)` call in `main()` to pass the new variable
+4. Test with `uv run setup-vps.py` (provisions a real server)
 
 ### Adding Environment Variables
 1. Add to `.env.example` with comments
-2. Add `os.getenv("VAR_NAME")` in globals section
-3. Add validation check if required (lines 32-35)
+2. Add `os.getenv("VAR_NAME")` (or `os.getenv("VAR_NAME", "")` for optional) in the globals section
+3. Add a required-var validation check if mandatory
 4. Use in cloud-init template or script logic
 
 ## Common Tasks
 
+**Preflight before provisioning**:
+```bash
+make doctor
+```
+
 **Test script locally** (no provisioning):
 ```bash
 # Comment out server creation in main() first
-source .env && uv run setup-vps.py
+uv run setup-vps.py
 ```
 
 **Update dependencies**:
 ```bash
-# uv handles this automatically, no lock file management needed
-# Just update import statements in setup-vps.py
+uv add <package>      # adds + locks
+uv sync               # install from lock
 ```
 
 **Debug cloud-init**:
@@ -296,9 +312,9 @@ sudo cat /var/log/cloud-init-output.log
 
 ## Notes for AI Agents
 
-- This is a **single-file script** - keep it that way unless complexity demands modules
-- **No tests** exist - changes require manual verification via actual provisioning
-- **Error paths are critical** - API failures should never leave silent state
-- **User experience matters** - use Rich formatting consistently, provide clear feedback
-- **Cloud-init is declarative** - changes require server rebuild to test
-- **Dependencies are pinned by uv** - check `uv.lock` if present (not currently in repo)
+- This is a **single-file script** — keep it that way unless complexity demands modules
+- **No tests** exist — changes require manual verification via actual provisioning
+- **Error paths are critical** — API failures should never leave silent state
+- **User experience matters** — use Rich formatting consistently, provide clear feedback
+- **Cloud-init is declarative** — changes require server rebuild to test
+- **Dependencies are managed by uv** — `uv.lock` is committed; keep it in sync
