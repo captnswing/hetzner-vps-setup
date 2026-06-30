@@ -29,9 +29,16 @@ Automated provisioning of hardened Ubuntu VPS servers on Hetzner Cloud with Tail
     - Upload public key to [Hetzner Console](https://console.hetzner.cloud/) → Security → SSH Keys
     - Name it: `Hetzner Automation Key` (exact name required)
 
-5. **Tailscale Auth Key** (reusable):
-    - Create at [login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys)
-    - Enable "Reusable" option
+5. **Tailscale Auth Key** (reusable, tagged):
+    - First, define the tag owner once in your ACL at
+      [login.tailscale.com/admin/acls](https://login.tailscale.com/admin/acls):
+      ```json
+      "tagOwners": { "tag:vps": ["autogroup:admin"] }
+      ```
+    - Create the key at [login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys)
+    - Enable **Reusable**; under **Tags**, select `tag:vps` (leave *Ephemeral* off —
+      these are persistent boxes). Tagged nodes get ACL scoping and don't hit the
+      180-day key-expiry re-auth.
 
 ## Setup
 
@@ -80,16 +87,50 @@ Outputs Tailscale VPN IP for SSH access.
 ssh sysadmin@<tailscale-ip>
 ```
 
-**Recommended**: Add to `~/.ssh/config`:
+At the end of provisioning the script offers to **append the `Host` block to your
+`~/.ssh/config`** automatically, so you can just:
 
 ```
-Host myserver
+ssh <hostname>
+```
+
+(It skips silently if a matching `Host` entry already exists.) The block it adds:
+
+```
+Host <hostname>
   HostName <tailscale-ip>
   User sysadmin
   IdentityFile ~/.ssh/Hetzner_Automation_Key
 ```
 
-Then: `ssh myserver`
+### From your phone (Mosh + QR)
+
+The provisioner prints a **QR code** encoding `ssh://sysadmin@<tailscale-ip>` — scan
+it with any SSH client (Termius, Blink, …) to connect; the QR is app-agnostic, it's
+just a standard SSH URI.
+
+For a connection that survives network changes and sleep (ideal on mobile), use
+**Mosh** (pre-installed):
+
+```bash
+mosh --ssh="ssh -i ~/.ssh/Hetzner_Automation_Key" sysadmin@<tailscale-ip>
+```
+
+Mosh rides the Tailscale tunnel (no public ports are opened — UFW already allows all
+traffic on `tailscale0`).
+
+### Web preview (`publish`)
+
+To share a locally-running dev server without opening any inbound port, run on the
+box:
+
+```bash
+publish 3000        # → ephemeral public https://<random>.trycloudflare.com URL
+```
+
+This opens an **outbound** Cloudflare quick tunnel (`cloudflared`) to
+`localhost:3000`. Ctrl+C to stop. The URL is random and ephemeral; a stable named
+URL would need a Cloudflare account (see `ROADMAP.md`).
 
 ### Ghostty Terminal Support
 
@@ -113,10 +154,12 @@ Required for proper terminal app display (`htop`, `vim`, etc.).
 ### Packages
 
 - **Tools**: git, curl, wget, jq, vim, tmux, ripgrep, fzf, gh
+- **Remote/mobile**: mosh (roaming SSH), Tailscale SSH
 - **Monitoring**: htop, iotop, ncdu
 - **Docker**: docker.io, docker-compose-v2
 - **Security**: ufw (firewall), unattended-upgrades
-- **VPN**: Tailscale (with SSH enabled)
+- **VPN**: Tailscale (with SSH enabled, node tagged `tag:vps`)
+- **Dev**: Claude Code, `cloudflared` + the `publish <port>` helper
 
 ### Shell Features
 

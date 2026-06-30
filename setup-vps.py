@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from string import Template
 
+import qrcode
 import questionary
 from dotenv import load_dotenv
 from hcloud import Client
@@ -14,7 +15,7 @@ from hcloud.locations import Location
 from hcloud.server_types import ServerType
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
 load_dotenv(".env")
@@ -22,6 +23,8 @@ load_dotenv(".env")
 console = Console()
 
 SSH_KEY_PATH = Path("~/.ssh/Hetzner_Automation_Key").expanduser()
+SSH_USER = "sysadmin"
+TAILSCALE_TAG = "tag:vps"
 
 HCLOUD_TOKEN = os.getenv("HCLOUD_TOKEN")
 SSH_KEY_NAME = os.getenv("SSH_KEY_NAME")
@@ -55,6 +58,75 @@ def prompt_choice(label, items, to_choice_fn, default_value=None):
     return ask_or_exit(questionary.select(label, choices=choices, default=default, use_arrow_keys=True))
 
 
+def _attr(obj, name):
+    """Read an attribute whether obj is a plain object or a dict (hcloud is inconsistent)."""
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
+def _monthly_gross(st_price) -> float | None:
+    """Gross monthly price (incl. VAT) from one ServerType price entry, or None."""
+    price_monthly = _attr(st_price, "price_monthly")
+    gross = _attr(price_monthly, "gross") if price_monthly is not None else None
+    try:
+        return float(gross) if gross is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def server_type_min_cost(st) -> float | None:
+    """Cheapest monthly price across all locations — shown before a datacenter is chosen."""
+    vals = [v for p in (getattr(st, "prices", None) or []) if (v := _monthly_gross(p)) is not None]
+    return min(vals) if vals else None
+
+
+def server_type_cost_at(st, location_name: str) -> float | None:
+    """Monthly price for a server type at a specific location."""
+    for p in getattr(st, "prices", None) or []:
+        if _attr(p, "location") == location_name:
+            return _monthly_gross(p)
+    return None
+
+
+def print_ssh_qr(user: str, ip: str) -> None:
+    """Print a scannable QR encoding an ssh:// URI — any SSH client app can ingest it."""
+    qr = qrcode.QRCode(border=1)
+    qr.add_data(f"ssh://{user}@{ip}")
+    qr.make(fit=True)
+    qr.print_ascii(invert=True)
+
+
+def maybe_write_ssh_config(hostname: str, ip: str) -> None:
+    """Offer to append a Host block to ~/.ssh/config so `ssh <hostname>` just works."""
+    config_path = Path("~/.ssh/config").expanduser()
+    existing = config_path.read_text() if config_path.exists() else ""
+    if f"Host {hostname}\n" in existing or f"Host {hostname} " in existing:
+        console.print(f"[dim]~/.ssh/config already has a 'Host {hostname}' entry — leaving it untouched.[/dim]")
+        return
+
+    if not ask_or_exit(questionary.confirm(f"Add '{hostname}' to ~/.ssh/config?", default=True)):
+        return
+
+    block = f"\nHost {hostname}\n    HostName {ip}\n    User {SSH_USER}\n    IdentityFile {SSH_KEY_PATH}\n"
+    config_path.parent.mkdir(mode=0o700, exist_ok=True)
+    with config_path.open("a") as f:
+        f.write(block)
+    console.print(f"[bold green]✓[/bold green] Added — connect with: [bold]ssh {hostname}[/bold]")
+
+
+def print_connection_info(hostname: str, ip: str) -> None:
+    """Show ssh + mosh commands and a phone-scannable QR."""
+    console.print("\n[bold cyan]Connect:[/bold cyan]")
+    # print() (not console.print) to keep the commands copy-paste clean, no markup parsing.
+    print(f"  ssh -i {SSH_KEY_PATH} {SSH_USER}@{ip}")
+    print(f'  mosh --ssh="ssh -i {SSH_KEY_PATH}" {SSH_USER}@{ip}   # roaming-friendly, great from a phone')
+
+    console.print("\n[bold cyan]Scan to connect from your phone[/bold cyan] (any SSH client):")
+    print_ssh_qr(SSH_USER, ip)
+    console.print(f"[dim]Encodes ssh://{SSH_USER}@{ip}[/dim]")
+
+
 def get_tailscale_ip(hostname: str, timeout: int = 300) -> str | None:
     """
     Polls the local Tailscale CLI to find the IP of the new node.
@@ -63,10 +135,11 @@ def get_tailscale_ip(hostname: str, timeout: int = 300) -> str | None:
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
         console=console,
     ) as progress:
         progress.add_task(
-            f"Waiting for Tailscale registration for '{hostname}' (timeout: {timeout}s)...",
+            f"Step 2/3 · Waiting for Tailscale registration for '{hostname}' (timeout: {timeout}s)...",
             total=None,
         )
         start = time.time()
@@ -91,9 +164,10 @@ def wait_for_ssh(ip: str, timeout: int = 300) -> bool:
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
         console=console,
     ) as progress:
-        progress.add_task(f"Waiting for SSH on {ip} (timeout: {timeout}s)...", total=None)
+        progress.add_task(f"Step 3/3 · Waiting for SSH on {ip} (timeout: {timeout}s)...", total=None)
         start = time.time()
         while time.time() - start < timeout:
             try:
@@ -161,10 +235,10 @@ def prompt_server_type(client: Client) -> str:
         filtered_types = server_types
 
     def to_choice(st):
-        return questionary.Choice(
-            title=f"{st.name:8} - {st.cores} vCPU, {st.memory:3} GB RAM, {st.disk:3} GB storage ({st.cpu_type})",
-            value=st.name,
-        )
+        cost = server_type_min_cost(st)
+        cost_str = f"  ~€{cost:.2f}/mo" if cost is not None else ""
+        specs = f"{st.cores} vCPU, {st.memory:3} GB RAM, {st.disk:3} GB storage ({st.cpu_type})"
+        return questionary.Choice(title=f"{st.name:8} - {specs}{cost_str}", value=st.name)
 
     return prompt_choice("Select server type:", filtered_types, to_choice, default_value="cx23")
 
@@ -248,15 +322,22 @@ def main() -> None:
         console.print("[bold red]Cannot proceed with unavailable server type/datacenter combination[/bold red]")
         sys.exit(1)
 
+    # Estimate cost at the chosen location (falls back to the cheapest location)
+    chosen_st = next((st for st in client.server_types.get_all() if st.name == server_type), None)
+    est_cost = server_type_cost_at(chosen_st, datacenter) if chosen_st else None
+    if est_cost is None and chosen_st:
+        est_cost = server_type_min_cost(chosen_st)
+
     # Confirm configuration
-    console.print("\n[bold cyan]Configuration Summary:[/bold cyan]")
     summary_table = Table(show_header=False, box=None)
     summary_table.add_column("Setting", style="cyan")
     summary_table.add_column("Value", style="green")
     summary_table.add_row("Hostname", hostname)
     summary_table.add_row("Server Type", server_type)
     summary_table.add_row("Datacenter", datacenter)
-    console.print(summary_table)
+    summary_table.add_row("Est. cost", f"~€{est_cost:.2f}/mo" if est_cost is not None else "n/a")
+    summary_table.add_row("Tailscale tag", TAILSCALE_TAG)
+    console.print(Panel(summary_table, title="[bold cyan]Configuration Summary[/bold cyan]", border_style="cyan"))
     console.print()
 
     proceed = ask_or_exit(questionary.confirm("Proceed with server creation?", default=True))
@@ -275,9 +356,10 @@ def main() -> None:
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
+            TimeElapsedColumn(),
             console=console,
         ) as progress:
-            progress.add_task("Provisioning server...", total=None)
+            progress.add_task("Step 1/3 · Provisioning server...", total=None)
 
             response = client.servers.create(
                 name=hostname,
@@ -314,19 +396,13 @@ def main() -> None:
 
         if ssh_ready:
             console.print(f"\n[bold green]✓ SSH ready on host {hostname} / {ts_ip}![/bold green]")
-            console.print("\n[cyan]Connect via:[/cyan]")
-            # Use print() instead of console.print() to avoid syntax highlighting
-            print(f"  ssh -i {SSH_KEY_PATH} sysadmin@{ts_ip}")
-            console.print(f"""
-            Host {hostname}
-                IdentityFile {SSH_KEY_PATH}
-                HostName {ts_ip}
-                User sysadmin
-            """)
+            print_connection_info(hostname, ts_ip)
+            console.print()
+            maybe_write_ssh_config(hostname, ts_ip)
         else:
             console.print("[yellow]SSH not ready yet (timeout)[/yellow]")
             console.print("[cyan]Try connecting manually:[/cyan]")
-            print(f"  ssh -i {SSH_KEY_PATH} sysadmin@{ts_ip}")
+            print(f"  ssh -i {SSH_KEY_PATH} {SSH_USER}@{ts_ip}")
     else:
         console.print("[yellow]Could not resolve Tailscale IP[/yellow]")
         console.print("[cyan]Is Tailscale started on your computer?[/cyan]")
