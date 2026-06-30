@@ -29,6 +29,7 @@ packages:
   - ripgrep
   - gh
   - fzf
+  - mosh
   - build-essential
 
 package_update: true
@@ -62,6 +63,17 @@ write_files:
     content: |
       #!/bin/bash
       docker system prune -af --filter "until=168h"
+
+  # `publish <port>` — expose a local port to an ephemeral public HTTPS URL via a
+  # Cloudflare quick tunnel. Outbound only: no inbound firewall ports are opened.
+  - path: /usr/local/bin/publish
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      PORT="$${1:?usage: publish <port>   (e.g. publish 3000)}"
+      echo "Publishing http://localhost:$${PORT} via Cloudflare quick tunnel (Ctrl+C to stop)..."
+      exec cloudflared tunnel --url "http://localhost:$${PORT}"
 
   # MOTD with system info
   - path: /etc/update-motd.d/99-custom
@@ -140,9 +152,16 @@ runcmd:
   # Enable Auto-updates
   - systemctl enable --now unattended-upgrades
 
-  # Tailscale VPN Setup
+  # Tailscale VPN Setup (node tagged for ACL scoping + no 180-day key-expiry re-auth)
   - curl -fsSL https://tailscale.com/install.sh | sh
-  - tailscale up --authkey=${tailscale_key} --ssh --accept-routes
+  - tailscale up --authkey=${tailscale_key} --ssh --accept-routes --advertise-tags=tag:vps
+
+  # cloudflared — powers `publish <port>` (ephemeral outbound tunnel, no inbound ports)
+  - |
+    cd /tmp && \
+    curl -fsSL -o cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb && \
+    dpkg -i cloudflared.deb && \
+    rm cloudflared.deb
 
   # Claude-Code Setup
   - curl -fsSL https://claude.ai/install.sh | bash
