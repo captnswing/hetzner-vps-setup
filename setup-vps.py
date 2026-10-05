@@ -33,10 +33,19 @@ _STDOUT_PIPED = not sys.stdout.isatty() and sys.stdin.isatty()
 _force_color = True if _STDOUT_PIPED else None
 console = Console(force_terminal=_force_color)
 
+# Uploaded to Hetzner (it must exist there), but SSH to the box goes over Tailscale SSH,
+# which authenticates by tailnet identity and policy, not by this key.
 SSH_KEY_PATH = Path("~/.ssh/Hetzner_Automation_Key").expanduser()
 SSH_USER = "sysadmin"
 TAILSCALE_TAG = "tag:vps"
 TAILSCALE_API = "https://api.tailscale.com/api/v2"
+# Tailscale SSH rule the tailnet policy needs; the default rule only covers your own (untagged) devices.
+TAILSCALE_SSH_RULE = f"""{{
+  "action": "accept",
+  "src":    ["<your Tailscale login>"],
+  "dst":    ["{TAILSCALE_TAG}"],
+  "users":  ["{SSH_USER}"]
+}}"""
 # One DNS label (RFC 1123): Tailscale and MagicDNS use it as the node name.
 HOSTNAME_RE = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
 
@@ -133,7 +142,7 @@ def maybe_write_ssh_config(hostname: str, ip: str) -> None:
     if not ask_or_exit(questionary.confirm(f"Add '{hostname}' to ~/.ssh/config?", default=True)):
         return
 
-    block = f"\nHost {hostname}\n    HostName {ip}\n    User {SSH_USER}\n    IdentityFile {SSH_KEY_PATH}\n"
+    block = f"\nHost {hostname}\n    HostName {ip}\n    User {SSH_USER}\n"
     config_path.parent.mkdir(mode=0o700, exist_ok=True)
     with config_path.open("a") as f:
         f.write(block)
@@ -144,8 +153,8 @@ def print_connection_info(hostname: str, ip: str) -> None:
     """Show ssh + mosh commands and a phone-scannable QR."""
     console.print("\n[bold cyan]Connect:[/bold cyan]")
     # print() (not console.print) to keep the commands copy-paste clean, no markup parsing.
-    print(f"  ssh -i {SSH_KEY_PATH} {SSH_USER}@{ip}")
-    print(f'  mosh --ssh="ssh -i {SSH_KEY_PATH}" {SSH_USER}@{ip}   # roaming-friendly, great from a phone')
+    print(f"  ssh {SSH_USER}@{ip}")
+    print(f"  mosh {SSH_USER}@{ip}   # roaming-friendly, great from a phone")
 
     console.print("\n[bold cyan]Scan to connect from your phone[/bold cyan] (any SSH client):")
     print_ssh_qr(SSH_USER, ip)
@@ -269,8 +278,6 @@ def ssh_command(ip: str, remote: str) -> list[str]:
     """ssh argv for running `remote` on the new box; dead connections (e.g. a reboot) fail within ~45s."""
     return [
         "ssh",
-        "-i",
-        str(SSH_KEY_PATH),
         "-o",
         "ConnectTimeout=5",
         "-o",
@@ -326,13 +333,22 @@ def wait_for_ssh(ip: str, timeout: int = 300) -> bool:
     ) as progress:
         progress.add_task(f"Step 3/4 · Waiting for SSH on {ip} (timeout: {timeout}s)...", total=None)
         start = time.time()
+        policy_hint_shown = False
         while time.time() - start < timeout:
             try:
-                result = subprocess.run(ssh_command(ip, "echo ready"), capture_output=True, timeout=10)
-                if result.returncode == 0:
-                    return True
+                result = subprocess.run(ssh_command(ip, "echo ready"), capture_output=True, text=True, timeout=10)
             except (subprocess.TimeoutExpired, subprocess.SubprocessError):
-                pass
+                result = None
+            if result and result.returncode == 0:
+                return True
+            if result and "tailnet policy does not permit" in result.stderr and not policy_hint_shown:
+                # Keep polling: the user can fix the policy while we wait.
+                console.print(
+                    "[bold red]✗[/bold red] Tailscale SSH is refused by your tailnet policy. Add this rule under "
+                    "Access controls → Tailscale SSH (https://login.tailscale.com/admin/acls), then wait here:"
+                )
+                print(TAILSCALE_SSH_RULE)
+                policy_hint_shown = True
             time.sleep(5)
     return False
 
@@ -584,7 +600,7 @@ def main() -> None:
         else:
             console.print("[yellow]SSH not ready yet (timeout)[/yellow]")
             console.print("[cyan]Try connecting manually:[/cyan]")
-            print(f"  ssh -i {SSH_KEY_PATH} {SSH_USER}@{ts_ip}")
+            print(f"  ssh {SSH_USER}@{ts_ip}")
     else:
         console.print("[yellow]Could not resolve Tailscale IP[/yellow]")
         console.print("[cyan]Is Tailscale started on your computer?[/cyan]")

@@ -59,6 +59,22 @@ cp .env.example .env
      **Credential** → **OAuth**; scope **Auth Keys → Write**, tag `tag:vps`. The secret
      is shown only once. Tagged nodes get ACL scoping and skip
      the 180-day key-expiry re-auth; the nodes are persistent (not ephemeral).
+   - Allow yourself to SSH in. The servers run **Tailscale SSH**, which authenticates by
+     tailnet identity and policy, not SSH keys, and Tailscale's default SSH rule only
+     covers your own untagged devices. Under Access controls → **Tailscale SSH** →
+     **Add rule** (or in the policy JSON's `"ssh"` array):
+     ```json
+     {
+       "action": "accept",
+       "src":    ["you@example.com"],
+       "dst":    ["tag:vps"],
+       "users":  ["sysadmin"]
+     }
+     ```
+     Use your own login rather than `autogroup:member` if others are in your tailnet —
+     `sysadmin` has passwordless sudo. `accept`, not `check`: check mode needs a browser
+     re-auth that the provisioner's non-interactive SSH can't do. Without this rule the
+     provisioner reports the refusal at step 3.
    - **Why not a plain auth key:** the key is written into the server's cloud-init
      user_data, which Hetzner's metadata service (`169.254.169.254`) serves to any process
      on the box for its whole lifetime. A reusable key read from there lets anyone join
@@ -118,8 +134,9 @@ ssh <hostname>
 Host <hostname>
   HostName <tailscale-ip>
   User sysadmin
-  IdentityFile ~/.ssh/Hetzner_Automation_Key
 ```
+
+No `IdentityFile`: Tailscale SSH lets you in by tailnet identity, not by key.
 
 ### From your phone (Mosh + QR)
 
@@ -131,7 +148,7 @@ For a connection that survives network changes and sleep (ideal on mobile), use
 **Mosh** (pre-installed):
 
 ```bash
-mosh --ssh="ssh -i ~/.ssh/Hetzner_Automation_Key" sysadmin@<tailscale-ip>
+mosh sysadmin@<tailscale-ip>
 ```
 
 Mosh rides the Tailscale tunnel (no public ports are opened — UFW already allows all

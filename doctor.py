@@ -17,7 +17,6 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from pathlib import Path
 
 from dotenv import load_dotenv
 from rich.console import Console
@@ -130,13 +129,6 @@ def check_pub_key() -> list[Result]:
     ]
 
 
-def check_local_private_key() -> list[Result]:
-    key = Path("~/.ssh/Hetzner_Automation_Key").expanduser()
-    if key.exists():
-        return [("Local private key present", "ok", str(key))]
-    return [("Local private key present", "warn", f"{key} not found — needed to SSH in after provisioning")]
-
-
 def check_hetzner() -> list[Result]:
     """Validate the Hetzner token and that the named SSH key exists in the account."""
     token = os.getenv("HCLOUD_TOKEN")
@@ -191,7 +183,6 @@ def main() -> None:
     results += check_env_vars()
     results += check_tailscale_credentials()
     results += check_pub_key()
-    results += check_local_private_key()
     results += check_hetzner()
 
     symbols = {"ok": "[green]✓[/green]", "fail": "[red]✗[/red]", "warn": "[yellow]•[/yellow]"}
