@@ -81,8 +81,8 @@ uv run setup-vps.py
 prompts for:
 
 - **Hostname** (default: `hardened-host`)
-- **Server type** (default: `cx23`, with estimated monthly cost shown)
-- **Datacenter** (default: `hel1`)
+- **Location** (default: `hel1`; only locations with orderable server types are offered)
+- **Server type** (only types available at that location right now, cheapest first, with monthly cost)
 
 and prints the Tailscale VPN IP for SSH access when done.
 

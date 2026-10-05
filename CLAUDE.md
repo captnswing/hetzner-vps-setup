@@ -35,8 +35,8 @@ make install
 cp .env.example .env
 
 # Edit .env with your credentials (see .env.example for inline docs)
-# Required: HCLOUD_TOKEN, SSH_KEY_NAME, PUB_KEY
-# Optional: TAILSCALE_AUTH_KEY, GITHUB_TOKEN (gh CLI + Docker GHCR auto-login)
+# Required: HCLOUD_TOKEN, SSH_KEY_NAME, TAILSCALE_AUTH_KEY
+# Optional: PUB_KEY, GITHUB_TOKEN (gh CLI + Docker GHCR auto-login)
 
 # Preflight check — verifies env, tokens, and tooling before provisioning
 make doctor          # plain-.env users
@@ -143,9 +143,9 @@ make format  # runs ruff format only
 ### Environment Variables
 - Load with `python-dotenv`: `load_dotenv(".env")` (done once at module top)
 - Access via `os.getenv()` with defaults where appropriate
-- **Always use empty string default** for optional vars: `os.getenv("VAR", "")` (never allow `None` — it renders as the `"None"` string in templates). See `TAILSCALE_AUTH_KEY`, `GITHUB_TOKEN`.
-- Validate **required** variables at startup (`HCLOUD_TOKEN`, `SSH_KEY_NAME`, `PUB_KEY`)
-- Both `TAILSCALE_AUTH_KEY` and `GITHUB_TOKEN` are documented in `.env.example` (optional, may be left blank)
+- **Always use empty string default** for optional vars: `os.getenv("VAR", "")` (never allow `None` — it renders as the `"None"` string in templates). See `GITHUB_TOKEN`.
+- Validate **required** variables at startup (`HCLOUD_TOKEN`, `SSH_KEY_NAME`, `TAILSCALE_AUTH_KEY`)
+- `GITHUB_TOKEN` is documented in `.env.example` as optional (may be left blank); without `TAILSCALE_AUTH_KEY` the box never joins the tailnet, so it is required
 
 ### Subprocess Calls
 - Use `subprocess.run()` with `capture_output=True, text=True`
@@ -176,11 +176,13 @@ make format  # runs ruff format only
    - `ask_or_exit()` / `prompt_choice()` — questionary wrappers
    - `generate_keypair()` / `resolve_public_key_material()` / `ensure_ssh_key()` — SSH key auto-create + upload to Hetzner
    - `print_ssh_qr()` / `maybe_write_ssh_config()` / `print_connection_info()` — post-provision UX (QR for mobile, `~/.ssh/config` entry)
-   - `server_type_min_cost()` / `server_type_cost_at()` — pricing helpers for the picker
+   - `server_type_cost_at()` / `available_at()` — per-location price and orderability (`ServerType.locations`)
    - `get_tailscale_ip()` — poll for VPN IP
    - `wait_for_ssh()` — check SSH availability
-   - `prompt_hostname()` / `prompt_server_type()` / `prompt_datacenter()` — interactive input
-   - `check_server_type_availability()` — validation
+   - `hostname_problem()` / `tailnet_has_node()` — hostname validation (RFC 1123, Hetzner, tailnet)
+   - `prompt_hostname()` / `prompt_location()` / `prompt_server_type()` — interactive input; location comes
+     first so the type list only shows what can be ordered there. Hetzner removed the `/datacenters`
+     API in Oct 2026 — use locations.
 3. **Main function** (`main()`)
    - Linear workflow: validate → prompt → create → wait → output
 

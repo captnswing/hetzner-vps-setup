@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import sys
 import time
@@ -12,7 +13,7 @@ from hcloud import Client
 from hcloud._exceptions import APIException
 from hcloud.images import Image
 from hcloud.locations import Location
-from hcloud.server_types import ServerType
+from hcloud.server_types import BoundServerType, ServerType
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
@@ -29,6 +30,8 @@ console = Console(force_terminal=_force_color)
 SSH_KEY_PATH = Path("~/.ssh/Hetzner_Automation_Key").expanduser()
 SSH_USER = "sysadmin"
 TAILSCALE_TAG = "tag:vps"
+# One DNS label (RFC 1123): Tailscale and MagicDNS use it as the node name.
+HOSTNAME_RE = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
 
 HCLOUD_TOKEN = os.getenv("HCLOUD_TOKEN")
 SSH_KEY_NAME = os.getenv("SSH_KEY_NAME")
@@ -36,7 +39,7 @@ TAILSCALE_AUTH_KEY = os.getenv("TAILSCALE_AUTH_KEY", "")
 PUB_KEY = os.getenv("PUB_KEY")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 
-for var in ["HCLOUD_TOKEN", "SSH_KEY_NAME"]:
+for var in ["HCLOUD_TOKEN", "SSH_KEY_NAME", "TAILSCALE_AUTH_KEY"]:
     if not os.getenv(var):
         console.print(f"[bold red]Error:[/bold red] {var} not found in environment")
         sys.exit(1)
@@ -79,18 +82,19 @@ def _monthly_gross(st_price) -> float | None:
         return None
 
 
-def server_type_min_cost(st) -> float | None:
-    """Cheapest monthly price across all locations — shown before a datacenter is chosen."""
-    vals = [v for p in (getattr(st, "prices", None) or []) if (v := _monthly_gross(p)) is not None]
-    return min(vals) if vals else None
-
-
 def server_type_cost_at(st, location_name: str) -> float | None:
     """Monthly price for a server type at a specific location."""
     for p in getattr(st, "prices", None) or []:
         if _attr(p, "location") == location_name:
             return _monthly_gross(p)
     return None
+
+
+def available_at(st: BoundServerType, location_name: str) -> bool:
+    """Whether a server type can be ordered at a location right now (not sold out or deprecated there)."""
+    return any(
+        sl.location.name == location_name and sl.available and sl.deprecation is None for sl in st.locations or []
+    )
 
 
 def print_ssh_qr(user: str, ip: str) -> None:
@@ -244,7 +248,7 @@ def wait_for_ssh(ip: str, timeout: int = 300) -> bool:
                         "-o",
                         "ConnectTimeout=5",
                         "-o",
-                        "StrictHostKeyChecking=no",
+                        "StrictHostKeyChecking=accept-new",
                         "-o",
                         "BatchMode=yes",
                         f"sysadmin@{ip}",
@@ -261,109 +265,79 @@ def wait_for_ssh(ip: str, timeout: int = 300) -> bool:
     return False
 
 
+def tailnet_has_node(hostname: str) -> bool:
+    """True if the tailnet already has a node by this name, e.g. a deleted box never removed from Tailscale.
+
+    A new node would then register as `<hostname>-1`, and `tailscale ip <hostname>` would return the old IP.
+    """
+    try:
+        result = subprocess.run(["tailscale", "ip", "-4", hostname], capture_output=True, text=True, timeout=10)
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def hostname_problem(client: Client, hostname: str) -> str | None:
+    """Return why a hostname can't be used, or None if it's fine."""
+    if not HOSTNAME_RE.fullmatch(hostname):
+        return (
+            "is not a valid hostname (lowercase letters, digits and hyphens; max 63 chars; no leading/trailing hyphen)"
+        )
+    try:
+        if client.servers.get_by_name(hostname):
+            return "is already taken by a server in your Hetzner project"
+    except Exception:
+        pass
+    if tailnet_has_node(hostname):
+        return "is already a node in your tailnet — remove it at https://login.tailscale.com/admin/machines first"
+    return None
+
+
 def prompt_hostname(client: Client) -> str:
-    """Prompt user for hostname and check availability."""
-    first_attempt = True
+    """Prompt user for hostname and check it is valid and unused in Hetzner and the tailnet."""
     while True:
-        prompt_msg = "Enter hostname" if first_attempt else "Enter hostname (previous name was taken)"
-        hostname = ask_or_exit(questionary.text(prompt_msg, default="hardened-host"))
-        first_attempt = False
-
-        try:
-            existing_server = client.servers.get_by_name(hostname)
-            if existing_server:
-                console.print(f"[bold red]✗[/bold red] Hostname '{hostname}' is already taken, please try another name")
-                continue
-        except Exception:
-            pass
-
+        hostname = ask_or_exit(questionary.text("Enter hostname", default="hardened-host")).strip()
+        if problem := hostname_problem(client, hostname):
+            console.print(f"[bold red]✗[/bold red] '{hostname}' {problem}")
+            continue
         console.print(f"[bold green]✓[/bold green] Hostname '{hostname}' is available")
         return hostname
 
 
-def prompt_server_type(client: Client) -> str:
-    """Display server type options and prompt for selection."""
+def prompt_location(client: Client, server_types: list[BoundServerType]) -> str:
+    """Prompt for a location, offering only those where at least one server type can be ordered."""
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         console=console,
     ) as progress:
-        progress.add_task("Loading server types...", total=None)
-        server_types = client.server_types.get_all()
+        progress.add_task("Loading locations...", total=None)
+        locations = client.locations.get_all()
 
-    common_types = ["cx23", "cx33", "cx43", "cpx22", "cpx31", "cpx41"]
-    filtered_types = [st for st in server_types if st.name in common_types]
-    filtered_types.sort(key=lambda st: st.name)
+    locations = [loc for loc in locations if any(available_at(st, loc.name) for st in server_types)]
+    if not locations:
+        console.print("[bold red]Error:[/bold red] No server types are available in any location right now")
+        sys.exit(1)
 
-    if not filtered_types:
-        console.print("[yellow]No server types found, using all available types[/yellow]")
-        filtered_types = server_types
+    def to_choice(loc):
+        return questionary.Choice(title=f"{loc.name:6} - {loc.city:15} ({loc.country})", value=loc.name)
+
+    return prompt_choice("Select location:", locations, to_choice, default_value="hel1")
+
+
+def prompt_server_type(server_types: list[BoundServerType], location_name: str) -> BoundServerType:
+    """Prompt for a server type among those available at the location, cheapest first."""
+    available = [st for st in server_types if available_at(st, location_name)]
+    available.sort(key=lambda st: (server_type_cost_at(st, location_name) or float("inf"), st.name))
 
     def to_choice(st):
-        cost = server_type_min_cost(st)
+        cost = server_type_cost_at(st, location_name)
         cost_str = f"  ~€{cost:.2f}/mo" if cost is not None else ""
-        specs = f"{st.cores} vCPU, {st.memory:3} GB RAM, {st.disk:3} GB storage ({st.cpu_type})"
+        specs = f"{st.cores:2} vCPU, {st.memory:3g} GB RAM, {st.disk:3} GB storage ({st.architecture}, {st.cpu_type})"
         return questionary.Choice(title=f"{st.name:8} - {specs}{cost_str}", value=st.name)
 
-    return prompt_choice("Select server type:", filtered_types, to_choice, default_value="cx23")
-
-
-def prompt_datacenter(client: Client) -> str:
-    """Display datacenter options and prompt for selection."""
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-    ) as progress:
-        progress.add_task("Loading datacenters...", total=None)
-        datacenters = client.datacenters.get_all()
-
-    def to_choice(dc):
-        return questionary.Choice(
-            title=f"{dc.location.name:6} - {dc.location.city:15} ({dc.location.country})",
-            value=dc.location.name,
-        )
-
-    return prompt_choice("Select datacenter:", datacenters, to_choice, default_value="hel1")
-
-
-def check_server_type_availability(client: Client, server_type_name: str, datacenter_name: str) -> bool:
-    """Check if the selected server type is available in the chosen datacenter."""
-    try:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-        ) as progress:
-            progress.add_task("Checking server type availability...", total=None)
-
-            # Get all server types
-            server_types = client.server_types.get_all()
-            server_type = next((st for st in server_types if st.name == server_type_name), None)
-
-            if not server_type:
-                console.print(f"[bold red]✗[/bold red] Server type '{server_type_name}' not found")
-                return False
-
-            # Get datacenter details
-            datacenters = client.datacenters.get_all()
-            datacenter = next((dc for dc in datacenters if dc.location.name == datacenter_name), None)
-
-            if not datacenter:
-                console.print(f"[bold red]✗[/bold red] Datacenter '{datacenter_name}' not found")
-                return False
-
-            # Check if server type is available in the datacenter
-            # Hetzner API doesn't have a direct availability check, but we can check if the server type
-            # is generally available. In practice, most server types are available in all datacenters.
-            console.print(
-                f"[bold green]✓[/bold green] Server type '{server_type_name}' is available in '{datacenter_name}'"
-            )
-            return True
-
-    except Exception as e:
-        console.print(f"[bold red]✗[/bold red] Error checking availability: {e}")
-        return False
+    name = prompt_choice("Select server type:", available, to_choice, default_value="cx23")
+    return next(st for st in available if st.name == name)
 
 
 def main() -> None:
@@ -379,27 +353,26 @@ def main() -> None:
 
     # Interactive prompts
     hostname = prompt_hostname(client)
-    server_type = prompt_server_type(client)
-    datacenter = prompt_datacenter(client)
 
-    # Check if server type is available in datacenter
-    if not check_server_type_availability(client, server_type, datacenter):
-        console.print("[bold red]Cannot proceed with unavailable server type/datacenter combination[/bold red]")
-        sys.exit(1)
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        progress.add_task("Loading server types...", total=None)
+        server_types = client.server_types.get_all()
 
-    # Estimate cost at the chosen location (falls back to the cheapest location)
-    chosen_st = next((st for st in client.server_types.get_all() if st.name == server_type), None)
-    est_cost = server_type_cost_at(chosen_st, datacenter) if chosen_st else None
-    if est_cost is None and chosen_st:
-        est_cost = server_type_min_cost(chosen_st)
+    location = prompt_location(client, server_types)
+    server_type = prompt_server_type(server_types, location)
+    est_cost = server_type_cost_at(server_type, location)
 
     # Confirm configuration
     summary_table = Table(show_header=False, box=None)
     summary_table.add_column("Setting", style="cyan")
     summary_table.add_column("Value", style="green")
     summary_table.add_row("Hostname", hostname)
-    summary_table.add_row("Server Type", server_type)
-    summary_table.add_row("Datacenter", datacenter)
+    summary_table.add_row("Server Type", server_type.name)
+    summary_table.add_row("Location", location)
     summary_table.add_row("Est. cost", f"~€{est_cost:.2f}/mo" if est_cost is not None else "n/a")
     summary_table.add_row("Tailscale tag", TAILSCALE_TAG)
     console.print(Panel(summary_table, title="[bold cyan]Configuration Summary[/bold cyan]", border_style="cyan"))
@@ -428,7 +401,7 @@ def main() -> None:
 
             response = client.servers.create(
                 name=hostname,
-                server_type=ServerType(name=server_type),
+                server_type=ServerType(name=server_type.name),
                 image=Image(name="ubuntu-24.04"),
                 ssh_keys=[ssh_key],
                 user_data=config.substitute(
@@ -437,7 +410,7 @@ def main() -> None:
                     tailscale_key=TAILSCALE_AUTH_KEY,
                     github_token=GITHUB_TOKEN,
                 ),
-                location=Location(name=datacenter),
+                location=Location(name=location),
             )
     except APIException as e:
         console.print(f"[bold red]Failed to create server:[/bold red] {e.code} - {e.message}")

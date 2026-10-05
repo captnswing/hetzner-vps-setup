@@ -162,7 +162,7 @@ runcmd:
   # cloudflared — powers `publish <port>` (ephemeral outbound tunnel, no inbound ports)
   - |
     cd /tmp && \
-    curl -fsSL -o cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb && \
+    curl -fsSL -o cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$$(dpkg --print-architecture).deb && \
     dpkg -i cloudflared.deb && \
     rm cloudflared.deb
 
@@ -174,14 +174,16 @@ runcmd:
   - sudo -u sysadmin -H sh -c 'curl -fsSL https://herdr.dev/install.sh | sh'
   - sudo -u sysadmin -H /home/sysadmin/.local/bin/herdr integration install claude
 
-  # Install latest fd (remove conflicting fdclone, download latest from GitHub)
+  # Install latest fd (remove conflicting fdclone, download latest from GitHub).
+  # Downloads use dpkg's architecture so ARM (cax) types work too.
   - apt remove -y fdclone fd-find
   - |
     cd /tmp && \
     LATEST_VERSION=$$(curl -s https://api.github.com/repos/sharkdp/fd/releases/latest | jq -r .tag_name) && \
-    curl -LO "https://github.com/sharkdp/fd/releases/download/$${LATEST_VERSION}/fd_$${LATEST_VERSION#v}_amd64.deb" && \
-    dpkg -i fd_*_amd64.deb && \
-    rm fd_*_amd64.deb
+    ARCH=$$(dpkg --print-architecture) && \
+    curl -LO "https://github.com/sharkdp/fd/releases/download/$${LATEST_VERSION}/fd_$${LATEST_VERSION#v}_$${ARCH}.deb" && \
+    dpkg -i fd_*_$${ARCH}.deb && \
+    rm fd_*_$${ARCH}.deb
 
   # Configure gh CLI and Docker GHCR authentication (if token provided).
   # runcmd runs under /bin/sh (dash): no bashisms like `<<<` — a syntax error aborts
