@@ -176,7 +176,9 @@ Required for proper terminal app display (`htop`, `vim`, etc.).
 
 ### Security
 
-- **UFW**: Only ports 443/tcp and 41641/udp (Tailscale) open
+- **UFW**: Only 41641/udp (Tailscale) open publicly
+- **Docker ports**: `-p` publishes to `127.0.0.1` by default (Docker bypasses UFW); bind a
+  host IP explicitly to expose one, e.g. `-p <tailscale-ip>:8080:80`
 - **Tailscale SSH**: VPN-only access, no public SSH
 - **Auto-updates**: Security patches via unattended-upgrades
 - **Docker logs**: Auto-rotation (3 × 10MB max)

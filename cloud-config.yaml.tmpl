@@ -44,11 +44,15 @@ ntp:
 
 write_files:
 
-  # Add Docker daemon config with logging limits
+  # Add Docker daemon config with logging limits. Docker writes its own iptables rules
+  # ahead of UFW, so `-p 8080:80` would be public despite the firewall; "ip" makes
+  # published ports bind to localhost unless a host IP is given explicitly
+  # (e.g. `-p 100.x.y.z:8080:80` for the Tailscale address).
   - path: /etc/docker/daemon.json
     content: |
       {
         "iptables": true,
+        "ip": "127.0.0.1",
         "log-driver": "json-file",
         "log-opts": {
           "max-size": "10m",
@@ -140,7 +144,6 @@ runcmd:
   - chown sysadmin:sysadmin /home/sysadmin/.sudo_as_admin_successful
 
   # Firewall Setup
-  - ufw allow 443/tcp
   - ufw allow 41641/udp
   - ufw allow in on tailscale0
   - ufw --force enable
@@ -180,11 +183,13 @@ runcmd:
     dpkg -i fd_*_amd64.deb && \
     rm fd_*_amd64.deb
 
-  # Configure gh CLI and Docker GHCR authentication (if token provided)
+  # Configure gh CLI and Docker GHCR authentication (if token provided).
+  # runcmd runs under /bin/sh (dash): no bashisms like `<<<` — a syntax error aborts
+  # the rest of the script, including the reboot.
   - |
     if [ -n "${github_token}" ]; then
-      sudo -u sysadmin gh auth login --with-token <<< "${github_token}"
-      sudo -u sysadmin sh -c "echo '${github_token}' | docker login ghcr.io -u nobody --password-stdin"
+      echo "${github_token}" | sudo -u sysadmin -H gh auth login --with-token
+      echo "${github_token}" | sudo -u sysadmin -H docker login ghcr.io -u nobody --password-stdin
     fi
 
   # Reboot
