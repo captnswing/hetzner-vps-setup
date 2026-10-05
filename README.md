@@ -78,7 +78,10 @@ the server is up and never written into user_data.
 > [1Password `op run` docs](https://developer.1password.com/docs/cli/secrets-environment-variables/)).
 > This is personal and optional — if you don't already use that workflow, the `.env`
 > path above is all you need. Run any command with secrets injected as
-> `op-run -- <cmd>` (e.g. `op-run -- make doctor`, `op-run -- uv run setup-vps.py`).
+> `op-run -- <cmd>` (e.g. `op-run -- make doctor`). Provision with
+> `op-run --no-masking -- uv run setup-vps.py`: masking pipes stdout, and the interactive
+> prompts can't size or position themselves through a pipe, so they render garbled.
+> The script prints no secrets.
 
 ## Provision
 

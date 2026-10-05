@@ -29,7 +29,8 @@ load_dotenv(".env")
 # `op run` pipes stdout (to mask secrets), so Rich sees a non-tty and drops color.
 # When a real terminal is still attached via stdin, force color on; leave it to Rich's
 # auto-detection otherwise (so genuine redirection / CI stays plain).
-_force_color = True if (not sys.stdout.isatty() and sys.stdin.isatty()) else None
+_STDOUT_PIPED = not sys.stdout.isatty() and sys.stdin.isatty()
+_force_color = True if _STDOUT_PIPED else None
 console = Console(force_terminal=_force_color)
 
 SSH_KEY_PATH = Path("~/.ssh/Hetzner_Automation_Key").expanduser()
@@ -463,6 +464,13 @@ def prompt_server_type(server_types: list[BoundServerType], location_name: str) 
 
 def main() -> None:
     console.print(Panel.fit("[bold cyan]🚀 Hetzner VPS Setup 🚀[/bold cyan]", border_style="cyan"))
+    if _STDOUT_PIPED:
+        # questionary (prompt_toolkit) can't read the terminal size or cursor position through a pipe:
+        # it assumes 80 columns and redraws prompts at the wrong place.
+        console.print(
+            "[yellow]Warning:[/yellow] stdout is piped (e.g. `op run` masking), so the prompts will render garbled. "
+            "Run with `op-run --no-masking --` / `op run --no-masking --`."
+        )
 
     client = Client(token=HCLOUD_TOKEN)
 

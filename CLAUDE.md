@@ -42,6 +42,7 @@ cp .env.example .env
 # Preflight check — verifies env, tokens, and tooling before provisioning
 make doctor          # plain-.env users
 # op-run -- make doctor   # maintainer 1Password path (see README "Advanced")
+# op-run --no-masking -- uv run setup-vps.py   # --no-masking: prompts garble when stdout is piped
 
 # Run with uv (handles dependencies automatically)
 uv run setup-vps.py
