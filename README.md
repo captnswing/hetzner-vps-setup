@@ -55,9 +55,9 @@ cp .env.example .env
      ```json
      "tagOwners": { "tag:vps": ["autogroup:admin"] }
      ```
-   - Create the OAuth client
-     ([login.tailscale.com/admin/settings/oauth](https://login.tailscale.com/admin/settings/oauth)):
-     scope **Auth Keys → Write**, tag `tag:vps`. Tagged nodes get ACL scoping and skip
+   - Create the OAuth client: admin console → **Settings → Trust credentials** →
+     **Credential** → **OAuth**; scope **Auth Keys → Write**, tag `tag:vps`. The secret
+     is shown only once. Tagged nodes get ACL scoping and skip
      the 180-day key-expiry re-auth; the nodes are persistent (not ephemeral).
    - **Why not a plain auth key:** the key is written into the server's cloud-init
      user_data, which Hetzner's metadata service (`169.254.169.254`) serves to any process
