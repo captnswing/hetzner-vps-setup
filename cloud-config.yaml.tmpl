@@ -61,6 +61,15 @@ write_files:
         "live-restore": true
       }
 
+  # Containers can reach Hetzner's metadata service, which serves this file's user_data
+  # for the server's lifetime. Drop that traffic in DOCKER-USER, the chain Docker leaves
+  # for user rules; re-applied on every Docker start. (--network host containers are
+  # host processes and are not covered.)
+  - path: /etc/systemd/system/docker.service.d/block-metadata.conf
+    content: |
+      [Service]
+      ExecStartPost=/bin/sh -c 'iptables -C DOCKER-USER -d 169.254.169.254 -j DROP 2>/dev/null || iptables -I DOCKER-USER -d 169.254.169.254 -j DROP'
+
   # Add automatic Docker cleanup cron
   - path: /etc/cron.weekly/docker-cleanup
     permissions: '0755'
@@ -149,6 +158,7 @@ runcmd:
   - ufw --force enable
 
   # Docker setup
+  - systemctl daemon-reload
   - systemctl restart docker
   - usermod -aG docker sysadmin
 
@@ -184,15 +194,6 @@ runcmd:
     curl -LO "https://github.com/sharkdp/fd/releases/download/$${LATEST_VERSION}/fd_$${LATEST_VERSION#v}_$${ARCH}.deb" && \
     dpkg -i fd_*_$${ARCH}.deb && \
     rm fd_*_$${ARCH}.deb
-
-  # Configure gh CLI and Docker GHCR authentication (if token provided).
-  # runcmd runs under /bin/sh (dash): no bashisms like `<<<` — a syntax error aborts
-  # the rest of the script, including the reboot.
-  - |
-    if [ -n "${github_token}" ]; then
-      echo "${github_token}" | sudo -u sysadmin -H gh auth login --with-token
-      echo "${github_token}" | sudo -u sysadmin -H docker login ghcr.io -u nobody --password-stdin
-    fi
 
   # Reboot
   - reboot

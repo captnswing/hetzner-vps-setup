@@ -35,8 +35,9 @@ make install
 cp .env.example .env
 
 # Edit .env with your credentials (see .env.example for inline docs)
-# Required: HCLOUD_TOKEN, SSH_KEY_NAME, TAILSCALE_AUTH_KEY
-# Optional: PUB_KEY, GITHUB_TOKEN (gh CLI + Docker GHCR auto-login)
+# Required: HCLOUD_TOKEN, SSH_KEY_NAME, and TAILSCALE_OAUTH_CLIENT_ID + _SECRET
+#           (or the reusable TAILSCALE_AUTH_KEY as a fallback)
+# Optional: PUB_KEY, GITHUB_TOKEN (gh CLI + Docker GHCR login, pushed over SSH)
 
 # Preflight check — verifies env, tokens, and tooling before provisioning
 make doctor          # plain-.env users
@@ -144,8 +145,10 @@ make format  # runs ruff format only
 - Load with `python-dotenv`: `load_dotenv(".env")` (done once at module top)
 - Access via `os.getenv()` with defaults where appropriate
 - **Always use empty string default** for optional vars: `os.getenv("VAR", "")` (never allow `None` — it renders as the `"None"` string in templates). See `GITHUB_TOKEN`.
-- Validate **required** variables at startup (`HCLOUD_TOKEN`, `SSH_KEY_NAME`, `TAILSCALE_AUTH_KEY`)
-- `GITHUB_TOKEN` is documented in `.env.example` as optional (may be left blank); without `TAILSCALE_AUTH_KEY` the box never joins the tailnet, so it is required
+- Validate **required** variables at startup (`HCLOUD_TOKEN`, `SSH_KEY_NAME`, and Tailscale OAuth client or `TAILSCALE_AUTH_KEY`)
+- **No reusable secrets in user_data.** Hetzner's metadata service serves user_data to any process on the box for its
+  lifetime. The Tailscale key is minted single-use per server (`mint_tailscale_key()`); `GITHUB_TOKEN` is pushed over
+  SSH after cloud-init finishes (`push_github_token()`). Keep new secrets out of the template the same way.
 
 ### Subprocess Calls
 - Use `subprocess.run()` with `capture_output=True, text=True`
@@ -177,8 +180,11 @@ make format  # runs ruff format only
    - `generate_keypair()` / `resolve_public_key_material()` / `ensure_ssh_key()` — SSH key auto-create + upload to Hetzner
    - `print_ssh_qr()` / `maybe_write_ssh_config()` / `print_connection_info()` — post-provision UX (QR for mobile, `~/.ssh/config` entry)
    - `server_type_cost_at()` / `available_at()` — per-location price and orderability (`ServerType.locations`)
+   - `mint_tailscale_key()` / `tailscale_auth_key()` — single-use Tailscale key via OAuth (reusable-key fallback)
    - `get_tailscale_ip()` — poll for VPN IP
-   - `wait_for_ssh()` — check SSH availability
+   - `ssh_command()` / `wait_for_ssh()` / `wait_for_cloud_init()` — SSH availability, then `cloud-init status --wait`
+     across the final reboot
+   - `push_github_token()` — gh + GHCR login over SSH
    - `hostname_problem()` / `tailnet_has_node()` — hostname validation (RFC 1123, Hetzner, tailnet)
    - `prompt_hostname()` / `prompt_location()` / `prompt_server_type()` — interactive input; location comes
      first so the type list only shows what can be ordered there. Hetzner removed the `/datacenters`
@@ -205,7 +211,7 @@ make format  # runs ruff format only
 - Hetzner provisions server with Ubuntu 24.04
 - cloud-init runs setup commands on first boot
 - Server reboots after configuration complete
-- Script polls for Tailscale IP, then SSH availability
+- Script polls for Tailscale IP, then SSH availability, then cloud-init completion
 
 ## Common Patterns
 

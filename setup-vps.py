@@ -1,8 +1,13 @@
+import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from string import Template
 
@@ -30,19 +35,30 @@ console = Console(force_terminal=_force_color)
 SSH_KEY_PATH = Path("~/.ssh/Hetzner_Automation_Key").expanduser()
 SSH_USER = "sysadmin"
 TAILSCALE_TAG = "tag:vps"
+TAILSCALE_API = "https://api.tailscale.com/api/v2"
 # One DNS label (RFC 1123): Tailscale and MagicDNS use it as the node name.
 HOSTNAME_RE = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
 
 HCLOUD_TOKEN = os.getenv("HCLOUD_TOKEN")
 SSH_KEY_NAME = os.getenv("SSH_KEY_NAME")
 TAILSCALE_AUTH_KEY = os.getenv("TAILSCALE_AUTH_KEY", "")
+TAILSCALE_OAUTH_CLIENT_ID = os.getenv("TAILSCALE_OAUTH_CLIENT_ID", "")
+TAILSCALE_OAUTH_CLIENT_SECRET = os.getenv("TAILSCALE_OAUTH_CLIENT_SECRET", "")
 PUB_KEY = os.getenv("PUB_KEY")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 
-for var in ["HCLOUD_TOKEN", "SSH_KEY_NAME", "TAILSCALE_AUTH_KEY"]:
+for var in ["HCLOUD_TOKEN", "SSH_KEY_NAME"]:
     if not os.getenv(var):
         console.print(f"[bold red]Error:[/bold red] {var} not found in environment")
         sys.exit(1)
+
+USE_TAILSCALE_OAUTH = bool(TAILSCALE_OAUTH_CLIENT_ID and TAILSCALE_OAUTH_CLIENT_SECRET)
+if not USE_TAILSCALE_OAUTH and not TAILSCALE_AUTH_KEY:
+    console.print(
+        "[bold red]Error:[/bold red] set TAILSCALE_OAUTH_CLIENT_ID + TAILSCALE_OAUTH_CLIENT_SECRET (recommended) "
+        "or TAILSCALE_AUTH_KEY"
+    )
+    sys.exit(1)
 
 
 def ask_or_exit(question):
@@ -196,6 +212,77 @@ def ensure_ssh_key(client: Client):
     return created
 
 
+def _tailscale_post(path: str, data: bytes, headers: dict[str, str]) -> dict:
+    request = urllib.request.Request(f"{TAILSCALE_API}{path}", data=data, headers=headers, method="POST")
+    with urllib.request.urlopen(request, timeout=15) as response:
+        return json.load(response)
+
+
+def mint_tailscale_key(hostname: str) -> str:
+    """Create a single-use, pre-authorized, tagged auth key that expires in an hour.
+
+    The key goes into the server's user_data, which the metadata service serves to anything on
+    the box for the server's lifetime, so it must be worthless once the node has joined.
+    """
+    token = _tailscale_post(
+        "/oauth/token",
+        urllib.parse.urlencode(
+            {"client_id": TAILSCALE_OAUTH_CLIENT_ID, "client_secret": TAILSCALE_OAUTH_CLIENT_SECRET}
+        ).encode(),
+        {"Content-Type": "application/x-www-form-urlencoded"},
+    )["access_token"]
+    create = {"reusable": False, "ephemeral": False, "preauthorized": True, "tags": [TAILSCALE_TAG]}
+    body = {
+        "capabilities": {"devices": {"create": create}},
+        "expirySeconds": 3600,
+        "description": f"hetzner-vps-setup {hostname}"[:50],
+    }
+    return _tailscale_post(
+        "/tailnet/-/keys",
+        json.dumps(body).encode(),
+        {"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )["key"]
+
+
+def tailscale_auth_key(hostname: str) -> str:
+    """Single-use key minted via the OAuth client, or the reusable $TAILSCALE_AUTH_KEY as a fallback."""
+    if not USE_TAILSCALE_OAUTH:
+        console.print(
+            "[yellow]Warning:[/yellow] using the reusable $TAILSCALE_AUTH_KEY — it stays readable on the box "
+            "via the metadata service. Set TAILSCALE_OAUTH_CLIENT_ID/SECRET to mint a single-use key instead."
+        )
+        return TAILSCALE_AUTH_KEY
+    try:
+        key = mint_tailscale_key(hostname)
+    except urllib.error.HTTPError as e:
+        console.print(f"[bold red]Failed to create a Tailscale auth key:[/bold red] {e.code} - {e.read().decode()}")
+        sys.exit(1)
+    except (urllib.error.URLError, KeyError, ValueError) as e:
+        console.print(f"[bold red]Failed to create a Tailscale auth key:[/bold red] {e}")
+        sys.exit(1)
+    console.print("[bold green]✓[/bold green] Created a single-use Tailscale auth key (expires in 1h)")
+    return key
+
+
+def ssh_command(ip: str, remote: str) -> list[str]:
+    """ssh argv for running `remote` on the new box; dead connections (e.g. a reboot) fail within ~45s."""
+    return [
+        "ssh",
+        "-i",
+        str(SSH_KEY_PATH),
+        "-o",
+        "ConnectTimeout=5",
+        "-o",
+        "ServerAliveInterval=15",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "BatchMode=yes",
+        f"{SSH_USER}@{ip}",
+        remote,
+    ]
+
+
 def get_tailscale_ip(hostname: str, timeout: int = 300) -> str | None:
     """
     Polls the local Tailscale CLI to find the IP of the new node.
@@ -208,7 +295,7 @@ def get_tailscale_ip(hostname: str, timeout: int = 300) -> str | None:
         console=console,
     ) as progress:
         progress.add_task(
-            f"Step 2/3 · Waiting for Tailscale registration for '{hostname}' (timeout: {timeout}s)...",
+            f"Step 2/4 · Waiting for Tailscale registration for '{hostname}' (timeout: {timeout}s)...",
             total=None,
         )
         start = time.time()
@@ -236,33 +323,67 @@ def wait_for_ssh(ip: str, timeout: int = 300) -> bool:
         TimeElapsedColumn(),
         console=console,
     ) as progress:
-        progress.add_task(f"Step 3/3 · Waiting for SSH on {ip} (timeout: {timeout}s)...", total=None)
+        progress.add_task(f"Step 3/4 · Waiting for SSH on {ip} (timeout: {timeout}s)...", total=None)
         start = time.time()
         while time.time() - start < timeout:
             try:
-                result = subprocess.run(
-                    [
-                        "ssh",
-                        "-i",
-                        str(SSH_KEY_PATH),
-                        "-o",
-                        "ConnectTimeout=5",
-                        "-o",
-                        "StrictHostKeyChecking=accept-new",
-                        "-o",
-                        "BatchMode=yes",
-                        f"sysadmin@{ip}",
-                        "echo ready",
-                    ],
-                    capture_output=True,
-                    timeout=10,
-                )
+                result = subprocess.run(ssh_command(ip, "echo ready"), capture_output=True, timeout=10)
                 if result.returncode == 0:
                     return True
             except (subprocess.TimeoutExpired, subprocess.SubprocessError):
                 pass
             time.sleep(5)
     return False
+
+
+def wait_for_cloud_init(ip: str, timeout: int = 900) -> int | None:
+    """Wait for cloud-init to finish, including the reboot at the end of runcmd.
+
+    Returns `cloud-init status` exit code (0 done, 2 done with recoverable errors, 1 failed), or None on
+    timeout. The reboot drops the connection mid-`--wait` (ssh exits 255), so retry until the second boot answers.
+    """
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        progress.add_task(f"Step 4/4 · Waiting for cloud-init to finish (timeout: {timeout}s)...", total=None)
+        deadline = time.time() + timeout
+        while (remaining := deadline - time.time()) > 0:
+            try:
+                result = subprocess.run(
+                    ssh_command(ip, "cloud-init status --wait"), capture_output=True, timeout=remaining
+                )
+            except subprocess.TimeoutExpired:
+                return None
+            if result.returncode in (0, 1, 2):
+                return result.returncode
+            time.sleep(5)
+    return None
+
+
+def push_github_token(ip: str) -> None:
+    """Log gh and Docker (GHCR) in on the box over SSH, so the token never enters user_data."""
+    script = (
+        'read -r t; printf %s "$t" | gh auth login --with-token'
+        ' && printf %s "$t" | docker login ghcr.io -u nobody --password-stdin'
+    )
+    try:
+        result = subprocess.run(
+            ssh_command(ip, f"sh -c {shlex.quote(script)}"),
+            input=f"{GITHUB_TOKEN}\n",
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        console.print("[yellow]Warning:[/yellow] timed out logging gh / GHCR in on the box")
+        return
+    if result.returncode == 0:
+        console.print("[bold green]✓[/bold green] gh CLI and GHCR logged in on the box")
+    else:
+        console.print(f"[yellow]Warning:[/yellow] gh / GHCR login on the box failed: {result.stderr.strip()}")
 
 
 def tailnet_has_node(hostname: str) -> bool:
@@ -375,6 +496,9 @@ def main() -> None:
     summary_table.add_row("Location", location)
     summary_table.add_row("Est. cost", f"~€{est_cost:.2f}/mo" if est_cost is not None else "n/a")
     summary_table.add_row("Tailscale tag", TAILSCALE_TAG)
+    summary_table.add_row(
+        "Tailscale key", "single-use (OAuth)" if USE_TAILSCALE_OAUTH else "reusable $TAILSCALE_AUTH_KEY"
+    )
     console.print(Panel(summary_table, title="[bold cyan]Configuration Summary[/bold cyan]", border_style="cyan"))
     console.print()
 
@@ -386,6 +510,7 @@ def main() -> None:
 
     # Load cloud-init configuration
     config = Template((Path(__file__).parent / "cloud-config.yaml.tmpl").read_text())
+    tailscale_key = tailscale_auth_key(hostname)
 
     # Create server
     console.print(f"\n[bold cyan]Creating server: {hostname}[/bold cyan]")
@@ -397,7 +522,7 @@ def main() -> None:
             TimeElapsedColumn(),
             console=console,
         ) as progress:
-            progress.add_task("Step 1/3 · Provisioning server...", total=None)
+            progress.add_task("Step 1/4 · Provisioning server...", total=None)
 
             response = client.servers.create(
                 name=hostname,
@@ -407,8 +532,7 @@ def main() -> None:
                 user_data=config.substitute(
                     hostname=hostname,
                     pub_key=pub_key_text,
-                    tailscale_key=TAILSCALE_AUTH_KEY,
-                    github_token=GITHUB_TOKEN,
+                    tailscale_key=tailscale_key,
                 ),
                 location=Location(name=location),
             )
@@ -433,6 +557,18 @@ def main() -> None:
         ssh_ready = wait_for_ssh(ts_ip)
 
         if ssh_ready:
+            status = wait_for_cloud_init(ts_ip)
+            if status is None:
+                console.print(
+                    "[yellow]cloud-init is still running (timeout) — check `cloud-init status --long`[/yellow]"
+                )
+            elif status != 0:
+                console.print(
+                    "[yellow]cloud-init finished with errors — check `sudo cloud-init status --long` "
+                    "and /var/log/cloud-init-output.log[/yellow]"
+                )
+            if status is not None and GITHUB_TOKEN:
+                push_github_token(ts_ip)
             console.print(f"\n[bold green]✓ SSH ready on host {hostname} / {ts_ip}![/bold green]")
             print_connection_info(hostname, ts_ip)
             console.print()

@@ -47,18 +47,28 @@ cp .env.example .env
    name exists, `setup-vps.py` offers to upload `$PUB_KEY`, an existing
    `~/.ssh/Hetzner_Automation_Key.pub`, or to generate a fresh keypair for you.
    - **`PUB_KEY`** (optional) — public-key text to upload if the key must be created.
-3. **`TAILSCALE_AUTH_KEY`** — reusable, tagged `tag:vps`, non-ephemeral. One-time setup:
+3. **`TAILSCALE_OAUTH_CLIENT_ID` + `TAILSCALE_OAUTH_CLIENT_SECRET`** — a Tailscale OAuth
+   client that `setup-vps.py` uses to mint a **single-use, 1-hour** auth key for each new
+   server. One-time setup:
    - Define the tag owner once in your ACL
      ([login.tailscale.com/admin/acls](https://login.tailscale.com/admin/acls)):
      ```json
      "tagOwners": { "tag:vps": ["autogroup:admin"] }
      ```
-   - Generate the key
-     ([login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys)):
-     **Reusable** on, **Tags** → `tag:vps`, **Ephemeral** off. Tagged nodes get ACL
-     scoping and skip the 180-day key-expiry re-auth.
+   - Create the OAuth client
+     ([login.tailscale.com/admin/settings/oauth](https://login.tailscale.com/admin/settings/oauth)):
+     scope **Auth Keys → Write**, tag `tag:vps`. Tagged nodes get ACL scoping and skip
+     the 180-day key-expiry re-auth; the nodes are persistent (not ephemeral).
+   - **Why not a plain auth key:** the key is written into the server's cloud-init
+     user_data, which Hetzner's metadata service (`169.254.169.254`) serves to any process
+     on the box for its whole lifetime. A reusable key read from there lets anyone join
+     devices to your tailnet as `tag:vps`; a single-use key is already spent.
+   - **Fallback:** `TAILSCALE_AUTH_KEY` (reusable, `tag:vps`, non-ephemeral, from
+     [admin/settings/keys](https://login.tailscale.com/admin/settings/keys)) still works
+     if the OAuth client is unset; `doctor` and `setup-vps.py` warn about it.
 
-`GITHUB_TOKEN` is optional (gh CLI / GHCR auto-login on the box).
+`GITHUB_TOKEN` is optional (gh CLI / GHCR login on the box). It is sent over SSH once
+the server is up and never written into user_data.
 
 > **Advanced (maintainer's setup):** instead of a `.env`, secrets can be injected at
 > point-of-use from 1Password via `op-run` (a personal wrapper) reading the committed
@@ -177,6 +187,7 @@ Required for proper terminal app display (`htop`, `vim`, etc.).
 ### Security
 
 - **UFW**: Only 41641/udp (Tailscale) open publicly
+- **Metadata service**: blocked for Docker containers (`DOCKER-USER` rule)
 - **Docker ports**: `-p` publishes to `127.0.0.1` by default (Docker bypasses UFW); bind a
   host IP explicitly to expose one, e.g. `-p <tailscale-ip>:8080:80`
 - **Tailscale SSH**: VPN-only access, no public SSH

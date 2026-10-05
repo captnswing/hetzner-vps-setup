@@ -20,11 +20,6 @@ Claude Code), June 2026.
 - **Project bootstrap (clone repo / rsync local folder).** pocketdev offers this at
   provision time. Doing it manually after SSH is fine for now.
 
-- **Single-use / ephemeral Tailscale auth keys.** Fits pocketdev's disposable-box
-  model, not mine (persistent boxes — an ephemeral node deregisters after extended
-  downtime). Tagging the node (ACL scoping + disabling the 180-day key-expiry
-  re-auth) is the part worth doing; see the live discussion.
-
 ## Considered & dropped
 
 - **Privilege separation (no-sudo `claude` user for the agent).** pocketdev runs
@@ -40,5 +35,8 @@ Claude Code), June 2026.
 - **Mosh** + app-agnostic mobile connect (QR encoding `ssh://…`), no public ports.
 - **Ephemeral `publish <port>`** via `cloudflared` quick-tunnel.
 - **Tagged Tailscale node** (`tag:vps`) — ACL scoping + no 180-day re-auth.
+- **Single-use Tailscale keys** minted per server via an OAuth client. Single-use is not
+  ephemeral: the node stays persistent. Ephemeral nodes stay out (they deregister after
+  extended downtime).
 - **UX polish**: per-type cost, summary panel, stepped/elapsed progress, optional
   `~/.ssh/config` append.
