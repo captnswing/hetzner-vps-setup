@@ -164,7 +164,7 @@ Required for proper terminal app display (`htop`, `vim`, etc.).
 - **Docker**: docker.io, docker-compose-v2
 - **Security**: ufw (firewall), unattended-upgrades
 - **VPN**: Tailscale (with SSH enabled, node tagged `tag:vps`)
-- **Dev**: Claude Code, `cloudflared` + the `publish <port>` helper
+- **Dev**: Claude Code, herdr (agent multiplexer, Claude integration pre-installed), `cloudflared` + the `publish <port>` helper
 
 ### Shell Features
 

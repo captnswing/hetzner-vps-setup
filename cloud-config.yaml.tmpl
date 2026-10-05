@@ -163,8 +163,13 @@ runcmd:
     dpkg -i cloudflared.deb && \
     rm cloudflared.deb
 
-  # Claude-Code Setup
-  - curl -fsSL https://claude.ai/install.sh | bash
+  # Claude Code + herdr (agent multiplexer). Both installers write to $$HOME/.local/bin,
+  # so run them as sysadmin — runcmd runs as root and would bury them in /root.
+  # Ubuntu's ~/.profile puts ~/.local/bin on PATH at login. The herdr integration
+  # wires Claude Code hooks into ~/.claude so herdr can track agent state.
+  - sudo -u sysadmin -H sh -c 'curl -fsSL https://claude.ai/install.sh | bash'
+  - sudo -u sysadmin -H sh -c 'curl -fsSL https://herdr.dev/install.sh | sh'
+  - sudo -u sysadmin -H /home/sysadmin/.local/bin/herdr integration install claude
 
   # Install latest fd (remove conflicting fdclone, download latest from GitHub)
   - apt remove -y fdclone fd-find
