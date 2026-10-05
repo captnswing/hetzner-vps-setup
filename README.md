@@ -155,7 +155,10 @@ See https://ghostty.org/docs/help/terminfo. In `~/.config/ghostty/config`, set
 shell-integration-features = ssh-terminfo,ssh-env
 ```
 
-Required for proper terminal app display (`htop`, `vim`, etc.).
+Ubuntu 24.04's ncurses predates the `xterm-ghostty` entry, so without this `htop`, `vim`,
+`tmux` etc. fail with "missing or unsuitable terminal". On the first `ssh` from a Ghostty
+shell it installs the entry into `~/.terminfo` on the server (no root needed), and falls
+back to `xterm-256color` if that fails. mosh sets its own `TERM` and needs nothing.
 
 ## What's Installed
 
