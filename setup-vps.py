@@ -1,7 +1,13 @@
+import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from string import Template
 
@@ -12,7 +18,7 @@ from hcloud import Client
 from hcloud._exceptions import APIException
 from hcloud.images import Image
 from hcloud.locations import Location
-from hcloud.server_types import ServerType
+from hcloud.server_types import BoundServerType, ServerType
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
@@ -23,16 +29,31 @@ load_dotenv(".env")
 # `op run` pipes stdout (to mask secrets), so Rich sees a non-tty and drops color.
 # When a real terminal is still attached via stdin, force color on; leave it to Rich's
 # auto-detection otherwise (so genuine redirection / CI stays plain).
-_force_color = True if (not sys.stdout.isatty() and sys.stdin.isatty()) else None
+_STDOUT_PIPED = not sys.stdout.isatty() and sys.stdin.isatty()
+_force_color = True if _STDOUT_PIPED else None
 console = Console(force_terminal=_force_color)
 
+# Uploaded to Hetzner (it must exist there), but SSH to the box goes over Tailscale SSH,
+# which authenticates by tailnet identity and policy, not by this key.
 SSH_KEY_PATH = Path("~/.ssh/Hetzner_Automation_Key").expanduser()
 SSH_USER = "sysadmin"
 TAILSCALE_TAG = "tag:vps"
+TAILSCALE_API = "https://api.tailscale.com/api/v2"
+# Tailscale SSH rule the tailnet policy needs; the default rule only covers your own (untagged) devices.
+TAILSCALE_SSH_RULE = f"""{{
+  "action": "accept",
+  "src":    ["<your Tailscale login>"],
+  "dst":    ["{TAILSCALE_TAG}"],
+  "users":  ["{SSH_USER}"]
+}}"""
+# One DNS label (RFC 1123): Tailscale and MagicDNS use it as the node name.
+HOSTNAME_RE = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
 
 HCLOUD_TOKEN = os.getenv("HCLOUD_TOKEN")
 SSH_KEY_NAME = os.getenv("SSH_KEY_NAME")
 TAILSCALE_AUTH_KEY = os.getenv("TAILSCALE_AUTH_KEY", "")
+TAILSCALE_OAUTH_CLIENT_ID = os.getenv("TAILSCALE_OAUTH_CLIENT_ID", "")
+TAILSCALE_OAUTH_CLIENT_SECRET = os.getenv("TAILSCALE_OAUTH_CLIENT_SECRET", "")
 PUB_KEY = os.getenv("PUB_KEY")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 
@@ -40,6 +61,14 @@ for var in ["HCLOUD_TOKEN", "SSH_KEY_NAME"]:
     if not os.getenv(var):
         console.print(f"[bold red]Error:[/bold red] {var} not found in environment")
         sys.exit(1)
+
+USE_TAILSCALE_OAUTH = bool(TAILSCALE_OAUTH_CLIENT_ID and TAILSCALE_OAUTH_CLIENT_SECRET)
+if not USE_TAILSCALE_OAUTH and not TAILSCALE_AUTH_KEY:
+    console.print(
+        "[bold red]Error:[/bold red] set TAILSCALE_OAUTH_CLIENT_ID + TAILSCALE_OAUTH_CLIENT_SECRET (recommended) "
+        "or TAILSCALE_AUTH_KEY"
+    )
+    sys.exit(1)
 
 
 def ask_or_exit(question):
@@ -79,18 +108,19 @@ def _monthly_gross(st_price) -> float | None:
         return None
 
 
-def server_type_min_cost(st) -> float | None:
-    """Cheapest monthly price across all locations — shown before a datacenter is chosen."""
-    vals = [v for p in (getattr(st, "prices", None) or []) if (v := _monthly_gross(p)) is not None]
-    return min(vals) if vals else None
-
-
 def server_type_cost_at(st, location_name: str) -> float | None:
     """Monthly price for a server type at a specific location."""
     for p in getattr(st, "prices", None) or []:
         if _attr(p, "location") == location_name:
             return _monthly_gross(p)
     return None
+
+
+def available_at(st: BoundServerType, location_name: str) -> bool:
+    """Whether a server type can be ordered at a location right now (not sold out or deprecated there)."""
+    return any(
+        sl.location.name == location_name and sl.available and sl.deprecation is None for sl in st.locations or []
+    )
 
 
 def print_ssh_qr(user: str, ip: str) -> None:
@@ -112,7 +142,7 @@ def maybe_write_ssh_config(hostname: str, ip: str) -> None:
     if not ask_or_exit(questionary.confirm(f"Add '{hostname}' to ~/.ssh/config?", default=True)):
         return
 
-    block = f"\nHost {hostname}\n    HostName {ip}\n    User {SSH_USER}\n    IdentityFile {SSH_KEY_PATH}\n"
+    block = f"\nHost {hostname}\n    HostName {ip}\n    User {SSH_USER}\n"
     config_path.parent.mkdir(mode=0o700, exist_ok=True)
     with config_path.open("a") as f:
         f.write(block)
@@ -123,8 +153,8 @@ def print_connection_info(hostname: str, ip: str) -> None:
     """Show ssh + mosh commands and a phone-scannable QR."""
     console.print("\n[bold cyan]Connect:[/bold cyan]")
     # print() (not console.print) to keep the commands copy-paste clean, no markup parsing.
-    print(f"  ssh -i {SSH_KEY_PATH} {SSH_USER}@{ip}")
-    print(f'  mosh --ssh="ssh -i {SSH_KEY_PATH}" {SSH_USER}@{ip}   # roaming-friendly, great from a phone')
+    print(f"  ssh {SSH_USER}@{ip}")
+    print(f"  mosh {SSH_USER}@{ip}   # roaming-friendly, great from a phone")
 
     console.print("\n[bold cyan]Scan to connect from your phone[/bold cyan] (any SSH client):")
     print_ssh_qr(SSH_USER, ip)
@@ -192,6 +222,75 @@ def ensure_ssh_key(client: Client):
     return created
 
 
+def _tailscale_post(path: str, data: bytes, headers: dict[str, str]) -> dict:
+    request = urllib.request.Request(f"{TAILSCALE_API}{path}", data=data, headers=headers, method="POST")
+    with urllib.request.urlopen(request, timeout=15) as response:
+        return json.load(response)
+
+
+def mint_tailscale_key(hostname: str) -> str:
+    """Create a single-use, pre-authorized, tagged auth key that expires in an hour.
+
+    The key goes into the server's user_data, which the metadata service serves to anything on
+    the box for the server's lifetime, so it must be worthless once the node has joined.
+    """
+    token = _tailscale_post(
+        "/oauth/token",
+        urllib.parse.urlencode(
+            {"client_id": TAILSCALE_OAUTH_CLIENT_ID, "client_secret": TAILSCALE_OAUTH_CLIENT_SECRET}
+        ).encode(),
+        {"Content-Type": "application/x-www-form-urlencoded"},
+    )["access_token"]
+    create = {"reusable": False, "ephemeral": False, "preauthorized": True, "tags": [TAILSCALE_TAG]}
+    body = {
+        "capabilities": {"devices": {"create": create}},
+        "expirySeconds": 3600,
+        "description": f"hetzner-vps-setup {hostname}"[:50],
+    }
+    return _tailscale_post(
+        "/tailnet/-/keys",
+        json.dumps(body).encode(),
+        {"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )["key"]
+
+
+def tailscale_auth_key(hostname: str) -> str:
+    """Single-use key minted via the OAuth client, or the reusable $TAILSCALE_AUTH_KEY as a fallback."""
+    if not USE_TAILSCALE_OAUTH:
+        console.print(
+            "[yellow]Warning:[/yellow] using the reusable $TAILSCALE_AUTH_KEY — it stays readable on the box "
+            "via the metadata service. Set TAILSCALE_OAUTH_CLIENT_ID/SECRET to mint a single-use key instead."
+        )
+        return TAILSCALE_AUTH_KEY
+    try:
+        key = mint_tailscale_key(hostname)
+    except urllib.error.HTTPError as e:
+        console.print(f"[bold red]Failed to create a Tailscale auth key:[/bold red] {e.code} - {e.read().decode()}")
+        sys.exit(1)
+    except (urllib.error.URLError, KeyError, ValueError) as e:
+        console.print(f"[bold red]Failed to create a Tailscale auth key:[/bold red] {e}")
+        sys.exit(1)
+    console.print("[bold green]✓[/bold green] Created a single-use Tailscale auth key (expires in 1h)")
+    return key
+
+
+def ssh_command(ip: str, remote: str) -> list[str]:
+    """ssh argv for running `remote` on the new box; dead connections (e.g. a reboot) fail within ~45s."""
+    return [
+        "ssh",
+        "-o",
+        "ConnectTimeout=5",
+        "-o",
+        "ServerAliveInterval=15",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "BatchMode=yes",
+        f"{SSH_USER}@{ip}",
+        remote,
+    ]
+
+
 def get_tailscale_ip(hostname: str, timeout: int = 300) -> str | None:
     """
     Polls the local Tailscale CLI to find the IP of the new node.
@@ -204,7 +303,7 @@ def get_tailscale_ip(hostname: str, timeout: int = 300) -> str | None:
         console=console,
     ) as progress:
         progress.add_task(
-            f"Step 2/3 · Waiting for Tailscale registration for '{hostname}' (timeout: {timeout}s)...",
+            f"Step 2/4 · Waiting for Tailscale registration for '{hostname}' (timeout: {timeout}s)...",
             total=None,
         )
         start = time.time()
@@ -232,142 +331,162 @@ def wait_for_ssh(ip: str, timeout: int = 300) -> bool:
         TimeElapsedColumn(),
         console=console,
     ) as progress:
-        progress.add_task(f"Step 3/3 · Waiting for SSH on {ip} (timeout: {timeout}s)...", total=None)
+        progress.add_task(f"Step 3/4 · Waiting for SSH on {ip} (timeout: {timeout}s)...", total=None)
         start = time.time()
+        policy_hint_shown = False
         while time.time() - start < timeout:
             try:
-                result = subprocess.run(
-                    [
-                        "ssh",
-                        "-i",
-                        str(SSH_KEY_PATH),
-                        "-o",
-                        "ConnectTimeout=5",
-                        "-o",
-                        "StrictHostKeyChecking=no",
-                        "-o",
-                        "BatchMode=yes",
-                        f"sysadmin@{ip}",
-                        "echo ready",
-                    ],
-                    capture_output=True,
-                    timeout=10,
-                )
-                if result.returncode == 0:
-                    return True
+                result = subprocess.run(ssh_command(ip, "echo ready"), capture_output=True, text=True, timeout=10)
             except (subprocess.TimeoutExpired, subprocess.SubprocessError):
-                pass
+                result = None
+            if result and result.returncode == 0:
+                return True
+            if result and "tailnet policy does not permit" in result.stderr and not policy_hint_shown:
+                # Keep polling: the user can fix the policy while we wait.
+                console.print(
+                    "[bold red]✗[/bold red] Tailscale SSH is refused by your tailnet policy. Add this rule under "
+                    "Access controls → Tailscale SSH (https://login.tailscale.com/admin/acls), then wait here:"
+                )
+                print(TAILSCALE_SSH_RULE)
+                policy_hint_shown = True
             time.sleep(5)
     return False
 
 
+def wait_for_cloud_init(ip: str, timeout: int = 900) -> int | None:
+    """Wait for cloud-init to finish, including the reboot at the end of runcmd.
+
+    Returns `cloud-init status` exit code (0 done, 2 done with recoverable errors, 1 failed), or None on
+    timeout. The reboot drops the connection mid-`--wait` (ssh exits 255), so retry until the second boot answers.
+    """
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        progress.add_task(f"Step 4/4 · Waiting for cloud-init to finish (timeout: {timeout}s)...", total=None)
+        deadline = time.time() + timeout
+        while (remaining := deadline - time.time()) > 0:
+            try:
+                result = subprocess.run(
+                    ssh_command(ip, "cloud-init status --wait"), capture_output=True, timeout=remaining
+                )
+            except subprocess.TimeoutExpired:
+                return None
+            if result.returncode in (0, 1, 2):
+                return result.returncode
+            time.sleep(5)
+    return None
+
+
+def push_github_token(ip: str) -> None:
+    """Log gh and Docker (GHCR) in on the box over SSH, so the token never enters user_data."""
+    script = (
+        'read -r t; printf %s "$t" | gh auth login --with-token'
+        ' && printf %s "$t" | docker login ghcr.io -u nobody --password-stdin'
+    )
+    try:
+        result = subprocess.run(
+            ssh_command(ip, f"sh -c {shlex.quote(script)}"),
+            input=f"{GITHUB_TOKEN}\n",
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        console.print("[yellow]Warning:[/yellow] timed out logging gh / GHCR in on the box")
+        return
+    if result.returncode == 0:
+        console.print("[bold green]✓[/bold green] gh CLI and GHCR logged in on the box")
+    else:
+        console.print(f"[yellow]Warning:[/yellow] gh / GHCR login on the box failed: {result.stderr.strip()}")
+
+
+def tailnet_has_node(hostname: str) -> bool:
+    """True if the tailnet already has a node by this name, e.g. a deleted box never removed from Tailscale.
+
+    A new node would then register as `<hostname>-1`, and `tailscale ip <hostname>` would return the old IP.
+    """
+    try:
+        result = subprocess.run(["tailscale", "ip", "-4", hostname], capture_output=True, text=True, timeout=10)
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def hostname_problem(client: Client, hostname: str) -> str | None:
+    """Return why a hostname can't be used, or None if it's fine."""
+    if not HOSTNAME_RE.fullmatch(hostname):
+        return (
+            "is not a valid hostname (lowercase letters, digits and hyphens; max 63 chars; no leading/trailing hyphen)"
+        )
+    try:
+        if client.servers.get_by_name(hostname):
+            return "is already taken by a server in your Hetzner project"
+    except Exception:
+        pass
+    if tailnet_has_node(hostname):
+        return "is already a node in your tailnet — remove it at https://login.tailscale.com/admin/machines first"
+    return None
+
+
 def prompt_hostname(client: Client) -> str:
-    """Prompt user for hostname and check availability."""
-    first_attempt = True
+    """Prompt user for hostname and check it is valid and unused in Hetzner and the tailnet."""
     while True:
-        prompt_msg = "Enter hostname" if first_attempt else "Enter hostname (previous name was taken)"
-        hostname = ask_or_exit(questionary.text(prompt_msg, default="hardened-host"))
-        first_attempt = False
-
-        try:
-            existing_server = client.servers.get_by_name(hostname)
-            if existing_server:
-                console.print(f"[bold red]✗[/bold red] Hostname '{hostname}' is already taken, please try another name")
-                continue
-        except Exception:
-            pass
-
+        hostname = ask_or_exit(questionary.text("Enter hostname", default="hardened-host")).strip()
+        if problem := hostname_problem(client, hostname):
+            console.print(f"[bold red]✗[/bold red] '{hostname}' {problem}")
+            continue
         console.print(f"[bold green]✓[/bold green] Hostname '{hostname}' is available")
         return hostname
 
 
-def prompt_server_type(client: Client) -> str:
-    """Display server type options and prompt for selection."""
+def prompt_location(client: Client, server_types: list[BoundServerType]) -> str:
+    """Prompt for a location, offering only those where at least one server type can be ordered."""
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         console=console,
     ) as progress:
-        progress.add_task("Loading server types...", total=None)
-        server_types = client.server_types.get_all()
+        progress.add_task("Loading locations...", total=None)
+        locations = client.locations.get_all()
 
-    common_types = ["cx23", "cx33", "cx43", "cpx22", "cpx31", "cpx41"]
-    filtered_types = [st for st in server_types if st.name in common_types]
-    filtered_types.sort(key=lambda st: st.name)
+    locations = [loc for loc in locations if any(available_at(st, loc.name) for st in server_types)]
+    if not locations:
+        console.print("[bold red]Error:[/bold red] No server types are available in any location right now")
+        sys.exit(1)
 
-    if not filtered_types:
-        console.print("[yellow]No server types found, using all available types[/yellow]")
-        filtered_types = server_types
+    def to_choice(loc):
+        return questionary.Choice(title=f"{loc.name:6} - {loc.city:15} ({loc.country})", value=loc.name)
+
+    return prompt_choice("Select location:", locations, to_choice, default_value="hel1")
+
+
+def prompt_server_type(server_types: list[BoundServerType], location_name: str) -> BoundServerType:
+    """Prompt for a server type among those available at the location, cheapest first."""
+    available = [st for st in server_types if available_at(st, location_name)]
+    available.sort(key=lambda st: (server_type_cost_at(st, location_name) or float("inf"), st.name))
 
     def to_choice(st):
-        cost = server_type_min_cost(st)
+        cost = server_type_cost_at(st, location_name)
         cost_str = f"  ~€{cost:.2f}/mo" if cost is not None else ""
-        specs = f"{st.cores} vCPU, {st.memory:3} GB RAM, {st.disk:3} GB storage ({st.cpu_type})"
+        specs = f"{st.cores:2} vCPU, {st.memory:3g} GB RAM, {st.disk:3} GB storage ({st.architecture}, {st.cpu_type})"
         return questionary.Choice(title=f"{st.name:8} - {specs}{cost_str}", value=st.name)
 
-    return prompt_choice("Select server type:", filtered_types, to_choice, default_value="cx23")
-
-
-def prompt_datacenter(client: Client) -> str:
-    """Display datacenter options and prompt for selection."""
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-    ) as progress:
-        progress.add_task("Loading datacenters...", total=None)
-        datacenters = client.datacenters.get_all()
-
-    def to_choice(dc):
-        return questionary.Choice(
-            title=f"{dc.location.name:6} - {dc.location.city:15} ({dc.location.country})",
-            value=dc.location.name,
-        )
-
-    return prompt_choice("Select datacenter:", datacenters, to_choice, default_value="hel1")
-
-
-def check_server_type_availability(client: Client, server_type_name: str, datacenter_name: str) -> bool:
-    """Check if the selected server type is available in the chosen datacenter."""
-    try:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-        ) as progress:
-            progress.add_task("Checking server type availability...", total=None)
-
-            # Get all server types
-            server_types = client.server_types.get_all()
-            server_type = next((st for st in server_types if st.name == server_type_name), None)
-
-            if not server_type:
-                console.print(f"[bold red]✗[/bold red] Server type '{server_type_name}' not found")
-                return False
-
-            # Get datacenter details
-            datacenters = client.datacenters.get_all()
-            datacenter = next((dc for dc in datacenters if dc.location.name == datacenter_name), None)
-
-            if not datacenter:
-                console.print(f"[bold red]✗[/bold red] Datacenter '{datacenter_name}' not found")
-                return False
-
-            # Check if server type is available in the datacenter
-            # Hetzner API doesn't have a direct availability check, but we can check if the server type
-            # is generally available. In practice, most server types are available in all datacenters.
-            console.print(
-                f"[bold green]✓[/bold green] Server type '{server_type_name}' is available in '{datacenter_name}'"
-            )
-            return True
-
-    except Exception as e:
-        console.print(f"[bold red]✗[/bold red] Error checking availability: {e}")
-        return False
+    name = prompt_choice("Select server type:", available, to_choice, default_value="cx23")
+    return next(st for st in available if st.name == name)
 
 
 def main() -> None:
     console.print(Panel.fit("[bold cyan]🚀 Hetzner VPS Setup 🚀[/bold cyan]", border_style="cyan"))
+    if _STDOUT_PIPED:
+        # questionary (prompt_toolkit) can't read the terminal size or cursor position through a pipe:
+        # it assumes 80 columns and redraws prompts at the wrong place.
+        console.print(
+            "[yellow]Warning:[/yellow] stdout is piped (e.g. `op run` masking), so the prompts will render garbled. "
+            "Run with `op-run --no-masking --` / `op run --no-masking --`."
+        )
 
     client = Client(token=HCLOUD_TOKEN)
 
@@ -379,29 +498,31 @@ def main() -> None:
 
     # Interactive prompts
     hostname = prompt_hostname(client)
-    server_type = prompt_server_type(client)
-    datacenter = prompt_datacenter(client)
 
-    # Check if server type is available in datacenter
-    if not check_server_type_availability(client, server_type, datacenter):
-        console.print("[bold red]Cannot proceed with unavailable server type/datacenter combination[/bold red]")
-        sys.exit(1)
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        progress.add_task("Loading server types...", total=None)
+        server_types = client.server_types.get_all()
 
-    # Estimate cost at the chosen location (falls back to the cheapest location)
-    chosen_st = next((st for st in client.server_types.get_all() if st.name == server_type), None)
-    est_cost = server_type_cost_at(chosen_st, datacenter) if chosen_st else None
-    if est_cost is None and chosen_st:
-        est_cost = server_type_min_cost(chosen_st)
+    location = prompt_location(client, server_types)
+    server_type = prompt_server_type(server_types, location)
+    est_cost = server_type_cost_at(server_type, location)
 
     # Confirm configuration
     summary_table = Table(show_header=False, box=None)
     summary_table.add_column("Setting", style="cyan")
     summary_table.add_column("Value", style="green")
     summary_table.add_row("Hostname", hostname)
-    summary_table.add_row("Server Type", server_type)
-    summary_table.add_row("Datacenter", datacenter)
+    summary_table.add_row("Server Type", server_type.name)
+    summary_table.add_row("Location", location)
     summary_table.add_row("Est. cost", f"~€{est_cost:.2f}/mo" if est_cost is not None else "n/a")
     summary_table.add_row("Tailscale tag", TAILSCALE_TAG)
+    summary_table.add_row(
+        "Tailscale key", "single-use (OAuth)" if USE_TAILSCALE_OAUTH else "reusable $TAILSCALE_AUTH_KEY"
+    )
     console.print(Panel(summary_table, title="[bold cyan]Configuration Summary[/bold cyan]", border_style="cyan"))
     console.print()
 
@@ -413,6 +534,7 @@ def main() -> None:
 
     # Load cloud-init configuration
     config = Template((Path(__file__).parent / "cloud-config.yaml.tmpl").read_text())
+    tailscale_key = tailscale_auth_key(hostname)
 
     # Create server
     console.print(f"\n[bold cyan]Creating server: {hostname}[/bold cyan]")
@@ -424,20 +546,19 @@ def main() -> None:
             TimeElapsedColumn(),
             console=console,
         ) as progress:
-            progress.add_task("Step 1/3 · Provisioning server...", total=None)
+            progress.add_task("Step 1/4 · Provisioning server...", total=None)
 
             response = client.servers.create(
                 name=hostname,
-                server_type=ServerType(name=server_type),
+                server_type=ServerType(name=server_type.name),
                 image=Image(name="ubuntu-24.04"),
                 ssh_keys=[ssh_key],
                 user_data=config.substitute(
                     hostname=hostname,
                     pub_key=pub_key_text,
-                    tailscale_key=TAILSCALE_AUTH_KEY,
-                    github_token=GITHUB_TOKEN,
+                    tailscale_key=tailscale_key,
                 ),
-                location=Location(name=datacenter),
+                location=Location(name=location),
             )
     except APIException as e:
         console.print(f"[bold red]Failed to create server:[/bold red] {e.code} - {e.message}")
@@ -460,6 +581,18 @@ def main() -> None:
         ssh_ready = wait_for_ssh(ts_ip)
 
         if ssh_ready:
+            status = wait_for_cloud_init(ts_ip)
+            if status is None:
+                console.print(
+                    "[yellow]cloud-init is still running (timeout) — check `cloud-init status --long`[/yellow]"
+                )
+            elif status != 0:
+                console.print(
+                    "[yellow]cloud-init finished with errors — check `sudo cloud-init status --long` "
+                    "and /var/log/cloud-init-output.log[/yellow]"
+                )
+            if status is not None and GITHUB_TOKEN:
+                push_github_token(ts_ip)
             console.print(f"\n[bold green]✓ SSH ready on host {hostname} / {ts_ip}![/bold green]")
             print_connection_info(hostname, ts_ip)
             console.print()
@@ -467,7 +600,7 @@ def main() -> None:
         else:
             console.print("[yellow]SSH not ready yet (timeout)[/yellow]")
             console.print("[cyan]Try connecting manually:[/cyan]")
-            print(f"  ssh -i {SSH_KEY_PATH} {SSH_USER}@{ts_ip}")
+            print(f"  ssh {SSH_USER}@{ts_ip}")
     else:
         console.print("[yellow]Could not resolve Tailscale IP[/yellow]")
         console.print("[cyan]Is Tailscale started on your computer?[/cyan]")

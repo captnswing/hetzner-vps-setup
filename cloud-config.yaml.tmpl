@@ -44,11 +44,15 @@ ntp:
 
 write_files:
 
-  # Add Docker daemon config with logging limits
+  # Add Docker daemon config with logging limits. Docker writes its own iptables rules
+  # ahead of UFW, so `-p 8080:80` would be public despite the firewall; "ip" makes
+  # published ports bind to localhost unless a host IP is given explicitly
+  # (e.g. `-p 100.x.y.z:8080:80` for the Tailscale address).
   - path: /etc/docker/daemon.json
     content: |
       {
         "iptables": true,
+        "ip": "127.0.0.1",
         "log-driver": "json-file",
         "log-opts": {
           "max-size": "10m",
@@ -56,6 +60,15 @@ write_files:
         },
         "live-restore": true
       }
+
+  # Containers can reach Hetzner's metadata service, which serves this file's user_data
+  # for the server's lifetime. Drop that traffic in DOCKER-USER, the chain Docker leaves
+  # for user rules; re-applied on every Docker start. (--network host containers are
+  # host processes and are not covered.)
+  - path: /etc/systemd/system/docker.service.d/block-metadata.conf
+    content: |
+      [Service]
+      ExecStartPost=/bin/sh -c 'iptables -C DOCKER-USER -d 169.254.169.254 -j DROP 2>/dev/null || iptables -I DOCKER-USER -d 169.254.169.254 -j DROP'
 
   # Add automatic Docker cleanup cron
   - path: /etc/cron.weekly/docker-cleanup
@@ -131,21 +144,17 @@ runcmd:
     echo 'export FZF_ALT_C_COMMAND='\''fd --type d --hidden --follow --exclude .git'\''' >> /home/sysadmin/.bashrc
     echo 'export FZF_CTRL_T_COMMAND='\''fd --type f --hidden --follow --exclude .git'\''' >> /home/sysadmin/.bashrc
 
-  # Make terminfo directory writable by admin group (to allow copy of Ghostty terminfo files later)
-  - chgrp -R admin /usr/share/terminfo
-  - chmod -R g+w /usr/share/terminfo
-
   # Disable sudo hint on login (but keep MOTD)
   - touch /home/sysadmin/.sudo_as_admin_successful
   - chown sysadmin:sysadmin /home/sysadmin/.sudo_as_admin_successful
 
   # Firewall Setup
-  - ufw allow 443/tcp
   - ufw allow 41641/udp
   - ufw allow in on tailscale0
   - ufw --force enable
 
   # Docker setup
+  - systemctl daemon-reload
   - systemctl restart docker
   - usermod -aG docker sysadmin
 
@@ -159,28 +168,28 @@ runcmd:
   # cloudflared — powers `publish <port>` (ephemeral outbound tunnel, no inbound ports)
   - |
     cd /tmp && \
-    curl -fsSL -o cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb && \
+    curl -fsSL -o cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$$(dpkg --print-architecture).deb && \
     dpkg -i cloudflared.deb && \
     rm cloudflared.deb
 
-  # Claude-Code Setup
-  - curl -fsSL https://claude.ai/install.sh | bash
+  # Claude Code + herdr (agent multiplexer). Both installers write to $$HOME/.local/bin,
+  # so run them as sysadmin — runcmd runs as root and would bury them in /root.
+  # Ubuntu's ~/.profile puts ~/.local/bin on PATH at login. The herdr integration
+  # wires Claude Code hooks into ~/.claude so herdr can track agent state.
+  - sudo -u sysadmin -H sh -c 'curl -fsSL https://claude.ai/install.sh | bash'
+  - sudo -u sysadmin -H sh -c 'curl -fsSL https://herdr.dev/install.sh | sh'
+  - sudo -u sysadmin -H /home/sysadmin/.local/bin/herdr integration install claude
 
-  # Install latest fd (remove conflicting fdclone, download latest from GitHub)
+  # Install latest fd (remove conflicting fdclone, download latest from GitHub).
+  # Downloads use dpkg's architecture so ARM (cax) types work too.
   - apt remove -y fdclone fd-find
   - |
     cd /tmp && \
     LATEST_VERSION=$$(curl -s https://api.github.com/repos/sharkdp/fd/releases/latest | jq -r .tag_name) && \
-    curl -LO "https://github.com/sharkdp/fd/releases/download/$${LATEST_VERSION}/fd_$${LATEST_VERSION#v}_amd64.deb" && \
-    dpkg -i fd_*_amd64.deb && \
-    rm fd_*_amd64.deb
-
-  # Configure gh CLI and Docker GHCR authentication (if token provided)
-  - |
-    if [ -n "${github_token}" ]; then
-      sudo -u sysadmin gh auth login --with-token <<< "${github_token}"
-      sudo -u sysadmin sh -c "echo '${github_token}' | docker login ghcr.io -u nobody --password-stdin"
-    fi
+    ARCH=$$(dpkg --print-architecture) && \
+    curl -LO "https://github.com/sharkdp/fd/releases/download/$${LATEST_VERSION}/fd_$${LATEST_VERSION#v}_$${ARCH}.deb" && \
+    dpkg -i fd_*_$${ARCH}.deb && \
+    rm fd_*_$${ARCH}.deb
 
   # Reboot
   - reboot
