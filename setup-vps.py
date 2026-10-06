@@ -2,6 +2,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -123,42 +124,29 @@ def available_at(st: BoundServerType, location_name: str) -> bool:
     )
 
 
-def print_ssh_qr(user: str, ip: str) -> None:
+def print_ssh_qr(user: str, host: str) -> None:
     """Print a scannable QR encoding an ssh:// URI — any SSH client app can ingest it."""
     qr = qrcode.QRCode(border=1)
-    qr.add_data(f"ssh://{user}@{ip}")
+    qr.add_data(f"ssh://{user}@{host}")
     qr.make(fit=True)
     qr.print_ascii(invert=True)
 
 
-def maybe_write_ssh_config(hostname: str, ip: str) -> None:
-    """Offer to append a Host block to ~/.ssh/config so `ssh <hostname>` just works."""
-    config_path = Path("~/.ssh/config").expanduser()
-    existing = config_path.read_text() if config_path.exists() else ""
-    if f"Host {hostname}\n" in existing or f"Host {hostname} " in existing:
-        console.print(f"[dim]~/.ssh/config already has a 'Host {hostname}' entry — leaving it untouched.[/dim]")
-        return
-
-    if not ask_or_exit(questionary.confirm(f"Add '{hostname}' to ~/.ssh/config?", default=True)):
-        return
-
-    block = f"\nHost {hostname}\n    HostName {ip}\n    User {SSH_USER}\n"
-    config_path.parent.mkdir(mode=0o700, exist_ok=True)
-    with config_path.open("a") as f:
-        f.write(block)
-    console.print(f"[bold green]✓[/bold green] Added — connect with: [bold]ssh {hostname}[/bold]")
-
-
 def print_connection_info(hostname: str, ip: str) -> None:
-    """Show ssh + mosh commands and a phone-scannable QR."""
+    """Show ssh + mosh commands and a phone-scannable QR.
+
+    They use the hostname: MagicDNS resolves it on every tailnet device, and Tailscale SSH needs no key or
+    ~/.ssh/config entry. The IP is shown for clients without MagicDNS.
+    """
     console.print("\n[bold cyan]Connect:[/bold cyan]")
     # print() (not console.print) to keep the commands copy-paste clean, no markup parsing.
-    print(f"  ssh {SSH_USER}@{ip}")
-    print(f"  mosh {SSH_USER}@{ip}   # roaming-friendly, great from a phone")
+    print(f"  ssh {SSH_USER}@{hostname}")
+    print(f"  mosh {SSH_USER}@{hostname}   # roaming-friendly, great from a phone")
+    console.print(f"[dim]  Tailscale IP: {ip}[/dim]")
 
     console.print("\n[bold cyan]Scan to connect from your phone[/bold cyan] (any SSH client):")
-    print_ssh_qr(SSH_USER, ip)
-    console.print(f"[dim]Encodes ssh://{SSH_USER}@{ip}[/dim]")
+    print_ssh_qr(SSH_USER, hostname)
+    console.print(f"[dim]Encodes ssh://{SSH_USER}@{hostname}[/dim]")
 
 
 def generate_keypair() -> str | None:
@@ -289,6 +277,58 @@ def ssh_command(ip: str, remote: str) -> list[str]:
         f"{SSH_USER}@{ip}",
         remote,
     ]
+
+
+def _local_tailscale_state() -> str | None:
+    """This machine's Tailscale BackendState (Running, Stopped, NeedsLogin, ...), or None if unreachable."""
+    try:
+        result = subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=10)
+        return json.loads(result.stdout).get("BackendState")
+    except (subprocess.SubprocessError, ValueError):
+        return None
+
+
+def _wait_for_local_tailscale(done, timeout: int = 30) -> str | None:
+    """Poll the local BackendState until done(state) is true or the timeout passes; return the last state."""
+    deadline = time.time() + timeout
+    while not done(state := _local_tailscale_state()) and time.time() < deadline:
+        time.sleep(1)
+    return state
+
+
+def ensure_local_tailscale() -> None:
+    """Make sure this machine is on the tailnet, starting Tailscale if needed.
+
+    The script finds the new node and SSHes into it over Tailscale; without a running local
+    client it would create a paid server and then wait out the registration timeout.
+    """
+    if not shutil.which("tailscale"):
+        console.print(
+            "[bold red]Error:[/bold red] the `tailscale` CLI is not installed — https://tailscale.com/download"
+        )
+        sys.exit(1)
+
+    state = _local_tailscale_state()
+    if state is None and sys.platform == "darwin":
+        # On macOS the CLI talks to the Tailscale app; it can't answer while the app isn't running.
+        console.print("[cyan]Starting the Tailscale app...[/cyan]")
+        subprocess.run(["open", "-a", "Tailscale"], capture_output=True, timeout=10)
+        state = _wait_for_local_tailscale(lambda s: s not in (None, "NoState", "Starting"))
+    if state == "Stopped":
+        console.print("[cyan]Tailscale is stopped on this machine — running `tailscale up`...[/cyan]")
+        subprocess.run(["tailscale", "up"], capture_output=True, text=True, timeout=30)
+        state = _wait_for_local_tailscale(lambda s: s == "Running")
+
+    if state != "Running":
+        hints = {
+            None: "can't reach the Tailscale daemon (Linux: `sudo systemctl start tailscaled`)",
+            "NeedsLogin": "it needs a login — run `tailscale up` or sign in from the Tailscale app",
+        }
+        console.print(
+            f"[bold red]Error:[/bold red] Tailscale on this machine is not running: {hints.get(state, state)}"
+        )
+        sys.exit(1)
+    console.print("[bold green]✓[/bold green] Tailscale is running on this machine")
 
 
 def get_tailscale_ip(hostname: str, timeout: int = 300) -> str | None:
@@ -488,6 +528,9 @@ def main() -> None:
             "Run with `op-run --no-masking --` / `op run --no-masking --`."
         )
 
+    # Before any prompt: the hostname check and everything after server creation go through the tailnet.
+    ensure_local_tailscale()
+
     client = Client(token=HCLOUD_TOKEN)
 
     # Ensure the SSH key exists in Hetzner (create + upload it if missing)
@@ -595,12 +638,10 @@ def main() -> None:
                 push_github_token(ts_ip)
             console.print(f"\n[bold green]✓ SSH ready on host {hostname} / {ts_ip}![/bold green]")
             print_connection_info(hostname, ts_ip)
-            console.print()
-            maybe_write_ssh_config(hostname, ts_ip)
         else:
             console.print("[yellow]SSH not ready yet (timeout)[/yellow]")
             console.print("[cyan]Try connecting manually:[/cyan]")
-            print(f"  ssh {SSH_USER}@{ts_ip}")
+            print(f"  ssh {SSH_USER}@{hostname}")
     else:
         console.print("[yellow]Could not resolve Tailscale IP[/yellow]")
         console.print("[cyan]Is Tailscale started on your computer?[/cyan]")
