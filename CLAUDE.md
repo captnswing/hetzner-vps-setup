@@ -182,6 +182,7 @@ make format  # runs ruff format only
    - `print_ssh_qr()` / `maybe_write_ssh_config()` / `print_connection_info()` — post-provision UX (QR for mobile, `~/.ssh/config` entry)
    - `server_type_cost_at()` / `available_at()` — per-location price and orderability (`ServerType.locations`)
    - `mint_tailscale_key()` / `tailscale_auth_key()` — single-use Tailscale key via OAuth (reusable-key fallback)
+   - `ensure_local_tailscale()` — local Tailscale installed + running (starts it if needed)
    - `get_tailscale_ip()` — poll for VPN IP
    - `ssh_command()` / `wait_for_ssh()` / `wait_for_cloud_init()` — SSH availability, then `cloud-init status --wait`
      across the final reboot
@@ -263,7 +264,9 @@ if result.returncode == 0:
 
 ## Constraints & Gotchas
 
-1. **Requires active Tailscale daemon** on local machine for IP resolution
+1. **Requires Tailscale on the local machine** for IP resolution and SSH. `ensure_local_tailscale()` checks it
+   at startup: launches the macOS app if it isn't running, runs `tailscale up` if it's stopped, and exits
+   (before creating anything) if it needs a login
 2. **Hetzner API token** must have Read & Write permissions
 3. **SSH key name** in Hetzner must match `SSH_KEY_NAME` exactly (the script can auto-create + upload one if missing)
 4. **Hostname uniqueness** checked before creation (per Hetzner account)

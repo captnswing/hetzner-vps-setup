@@ -2,6 +2,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -291,6 +292,58 @@ def ssh_command(ip: str, remote: str) -> list[str]:
     ]
 
 
+def _local_tailscale_state() -> str | None:
+    """This machine's Tailscale BackendState (Running, Stopped, NeedsLogin, ...), or None if unreachable."""
+    try:
+        result = subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=10)
+        return json.loads(result.stdout).get("BackendState")
+    except (subprocess.SubprocessError, ValueError):
+        return None
+
+
+def _wait_for_local_tailscale(done, timeout: int = 30) -> str | None:
+    """Poll the local BackendState until done(state) is true or the timeout passes; return the last state."""
+    deadline = time.time() + timeout
+    while not done(state := _local_tailscale_state()) and time.time() < deadline:
+        time.sleep(1)
+    return state
+
+
+def ensure_local_tailscale() -> None:
+    """Make sure this machine is on the tailnet, starting Tailscale if needed.
+
+    The script finds the new node and SSHes into it over Tailscale; without a running local
+    client it would create a paid server and then wait out the registration timeout.
+    """
+    if not shutil.which("tailscale"):
+        console.print(
+            "[bold red]Error:[/bold red] the `tailscale` CLI is not installed — https://tailscale.com/download"
+        )
+        sys.exit(1)
+
+    state = _local_tailscale_state()
+    if state is None and sys.platform == "darwin":
+        # On macOS the CLI talks to the Tailscale app; it can't answer while the app isn't running.
+        console.print("[cyan]Starting the Tailscale app...[/cyan]")
+        subprocess.run(["open", "-a", "Tailscale"], capture_output=True, timeout=10)
+        state = _wait_for_local_tailscale(lambda s: s not in (None, "NoState", "Starting"))
+    if state == "Stopped":
+        console.print("[cyan]Tailscale is stopped on this machine — running `tailscale up`...[/cyan]")
+        subprocess.run(["tailscale", "up"], capture_output=True, text=True, timeout=30)
+        state = _wait_for_local_tailscale(lambda s: s == "Running")
+
+    if state != "Running":
+        hints = {
+            None: "can't reach the Tailscale daemon (Linux: `sudo systemctl start tailscaled`)",
+            "NeedsLogin": "it needs a login — run `tailscale up` or sign in from the Tailscale app",
+        }
+        console.print(
+            f"[bold red]Error:[/bold red] Tailscale on this machine is not running: {hints.get(state, state)}"
+        )
+        sys.exit(1)
+    console.print("[bold green]✓[/bold green] Tailscale is running on this machine")
+
+
 def get_tailscale_ip(hostname: str, timeout: int = 300) -> str | None:
     """
     Polls the local Tailscale CLI to find the IP of the new node.
@@ -487,6 +540,9 @@ def main() -> None:
             "[yellow]Warning:[/yellow] stdout is piped (e.g. `op run` masking), so the prompts will render garbled. "
             "Run with `op-run --no-masking --` / `op run --no-masking --`."
         )
+
+    # Before any prompt: the hostname check and everything after server creation go through the tailnet.
+    ensure_local_tailscale()
 
     client = Client(token=HCLOUD_TOKEN)
 
