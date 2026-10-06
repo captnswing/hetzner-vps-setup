@@ -113,34 +113,27 @@ prompts for:
 - **Location** (default: `hel1`; only locations with orderable server types are offered)
 - **Server type** (only types available at that location right now, cheapest first, with monthly cost)
 
-and prints the Tailscale VPN IP for SSH access when done.
+and prints the commands to connect when done.
 
 ## Connect
 
 ```bash
-ssh sysadmin@<tailscale-ip>
+ssh sysadmin@<hostname>
 ```
 
-At the end of provisioning the script offers to **append the `Host` block to your
-`~/.ssh/config`** automatically, so you can just:
+Tailscale's MagicDNS resolves the hostname on every device in your tailnet, and
+Tailscale SSH lets you in by tailnet identity, so you need no key and no
+`~/.ssh/config` entry. To drop the `sysadmin@`, add one wildcard block to
+`~/.ssh/config` that matches your hostnames:
 
 ```
-ssh <hostname>
-```
-
-(It skips silently if a matching `Host` entry already exists.) The block it adds:
-
-```
-Host <hostname>
-  HostName <tailscale-ip>
+Host hardened-*
   User sysadmin
 ```
 
-No `IdentityFile`: Tailscale SSH lets you in by tailnet identity, not by key.
-
 ### From your phone (Mosh + QR)
 
-The provisioner prints a **QR code** encoding `ssh://sysadmin@<tailscale-ip>` — scan
+The provisioner prints a **QR code** encoding `ssh://sysadmin@<hostname>` — scan
 it with any SSH client (Termius, Blink, …) to connect; the QR is app-agnostic, it's
 just a standard SSH URI.
 
@@ -148,7 +141,7 @@ For a connection that survives network changes and sleep (ideal on mobile), use
 **Mosh** (pre-installed):
 
 ```bash
-mosh sysadmin@<tailscale-ip>
+mosh sysadmin@<hostname>
 ```
 
 Mosh rides the Tailscale tunnel (no public ports are opened — UFW already allows all

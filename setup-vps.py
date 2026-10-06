@@ -124,42 +124,29 @@ def available_at(st: BoundServerType, location_name: str) -> bool:
     )
 
 
-def print_ssh_qr(user: str, ip: str) -> None:
+def print_ssh_qr(user: str, host: str) -> None:
     """Print a scannable QR encoding an ssh:// URI — any SSH client app can ingest it."""
     qr = qrcode.QRCode(border=1)
-    qr.add_data(f"ssh://{user}@{ip}")
+    qr.add_data(f"ssh://{user}@{host}")
     qr.make(fit=True)
     qr.print_ascii(invert=True)
 
 
-def maybe_write_ssh_config(hostname: str, ip: str) -> None:
-    """Offer to append a Host block to ~/.ssh/config so `ssh <hostname>` just works."""
-    config_path = Path("~/.ssh/config").expanduser()
-    existing = config_path.read_text() if config_path.exists() else ""
-    if f"Host {hostname}\n" in existing or f"Host {hostname} " in existing:
-        console.print(f"[dim]~/.ssh/config already has a 'Host {hostname}' entry — leaving it untouched.[/dim]")
-        return
-
-    if not ask_or_exit(questionary.confirm(f"Add '{hostname}' to ~/.ssh/config?", default=True)):
-        return
-
-    block = f"\nHost {hostname}\n    HostName {ip}\n    User {SSH_USER}\n"
-    config_path.parent.mkdir(mode=0o700, exist_ok=True)
-    with config_path.open("a") as f:
-        f.write(block)
-    console.print(f"[bold green]✓[/bold green] Added — connect with: [bold]ssh {hostname}[/bold]")
-
-
 def print_connection_info(hostname: str, ip: str) -> None:
-    """Show ssh + mosh commands and a phone-scannable QR."""
+    """Show ssh + mosh commands and a phone-scannable QR.
+
+    They use the hostname: MagicDNS resolves it on every tailnet device, and Tailscale SSH needs no key or
+    ~/.ssh/config entry. The IP is shown for clients without MagicDNS.
+    """
     console.print("\n[bold cyan]Connect:[/bold cyan]")
     # print() (not console.print) to keep the commands copy-paste clean, no markup parsing.
-    print(f"  ssh {SSH_USER}@{ip}")
-    print(f"  mosh {SSH_USER}@{ip}   # roaming-friendly, great from a phone")
+    print(f"  ssh {SSH_USER}@{hostname}")
+    print(f"  mosh {SSH_USER}@{hostname}   # roaming-friendly, great from a phone")
+    console.print(f"[dim]  Tailscale IP: {ip}[/dim]")
 
     console.print("\n[bold cyan]Scan to connect from your phone[/bold cyan] (any SSH client):")
-    print_ssh_qr(SSH_USER, ip)
-    console.print(f"[dim]Encodes ssh://{SSH_USER}@{ip}[/dim]")
+    print_ssh_qr(SSH_USER, hostname)
+    console.print(f"[dim]Encodes ssh://{SSH_USER}@{hostname}[/dim]")
 
 
 def generate_keypair() -> str | None:
@@ -651,12 +638,10 @@ def main() -> None:
                 push_github_token(ts_ip)
             console.print(f"\n[bold green]✓ SSH ready on host {hostname} / {ts_ip}![/bold green]")
             print_connection_info(hostname, ts_ip)
-            console.print()
-            maybe_write_ssh_config(hostname, ts_ip)
         else:
             console.print("[yellow]SSH not ready yet (timeout)[/yellow]")
             console.print("[cyan]Try connecting manually:[/cyan]")
-            print(f"  ssh {SSH_USER}@{ts_ip}")
+            print(f"  ssh {SSH_USER}@{hostname}")
     else:
         console.print("[yellow]Could not resolve Tailscale IP[/yellow]")
         console.print("[cyan]Is Tailscale started on your computer?[/cyan]")

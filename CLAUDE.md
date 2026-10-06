@@ -179,7 +179,8 @@ make format  # runs ruff format only
 2. **Helper functions**, including:
    - `ask_or_exit()` / `prompt_choice()` — questionary wrappers
    - `generate_keypair()` / `resolve_public_key_material()` / `ensure_ssh_key()` — SSH key auto-create + upload to Hetzner
-   - `print_ssh_qr()` / `maybe_write_ssh_config()` / `print_connection_info()` — post-provision UX (QR for mobile, `~/.ssh/config` entry)
+   - `print_ssh_qr()` / `print_connection_info()` — post-provision UX: `ssh sysadmin@<hostname>` (MagicDNS + Tailscale SSH,
+     so no `~/.ssh/config` entry is written) and a QR for mobile
    - `server_type_cost_at()` / `available_at()` — per-location price and orderability (`ServerType.locations`)
    - `mint_tailscale_key()` / `tailscale_auth_key()` — single-use Tailscale key via OAuth (reusable-key fallback)
    - `ensure_local_tailscale()` — local Tailscale installed + running (starts it if needed)

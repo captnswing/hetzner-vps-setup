@@ -38,5 +38,5 @@ Claude Code), June 2026.
 - **Single-use Tailscale keys** minted per server via an OAuth client. Single-use is not
   ephemeral: the node stays persistent. Ephemeral nodes stay out (they deregister after
   extended downtime).
-- **UX polish**: per-type cost, summary panel, stepped/elapsed progress, optional
-  `~/.ssh/config` append.
+- **UX polish**: per-type cost, summary panel, stepped/elapsed progress; connect by
+  MagicDNS hostname instead of a `~/.ssh/config` entry.
