@@ -279,13 +279,37 @@ def ssh_command(ip: str, remote: str) -> list[str]:
     ]
 
 
-def _local_tailscale_state() -> str | None:
-    """This machine's Tailscale BackendState (Running, Stopped, NeedsLogin, ...), or None if unreachable."""
+def _local_tailscale_status() -> dict:
+    """`tailscale status --json` for this machine, or {} if the daemon can't be reached."""
     try:
         result = subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=10)
-        return json.loads(result.stdout).get("BackendState")
+        return json.loads(result.stdout)
     except (subprocess.SubprocessError, ValueError):
-        return None
+        return {}
+
+
+def _local_tailscale_state() -> str | None:
+    """This machine's Tailscale BackendState (Running, Stopped, NeedsLogin, ...), or None if unreachable."""
+    return _local_tailscale_status().get("BackendState")
+
+
+def forget_old_host_keys(hostname: str, ip: str) -> None:
+    """Drop known_hosts entries an earlier box with the same name (or a reused IP) left behind.
+
+    A rebuilt box has a new host key, so ssh/mosh would refuse it with "REMOTE HOST IDENTIFICATION HAS
+    CHANGED". Dropping the old key is safe here: the connection runs over Tailscale, which already
+    authenticates the node.
+    """
+    hosts = [hostname, ip]
+    if suffix := _local_tailscale_status().get("MagicDNSSuffix"):
+        hosts.append(f"{hostname}.{suffix}")
+    for host in hosts:
+        try:
+            result = subprocess.run(["ssh-keygen", "-R", host], capture_output=True, text=True, timeout=10)
+        except (FileNotFoundError, subprocess.SubprocessError):
+            return
+        if "found" in result.stdout:
+            console.print(f"[dim]Removed the old host key for {host} from ~/.ssh/known_hosts[/dim]")
 
 
 def _wait_for_local_tailscale(done, timeout: int = 30) -> str | None:
@@ -618,6 +642,7 @@ def main() -> None:
     ts_ip = get_tailscale_ip(hostname)
     if ts_ip:
         console.print(f"[bold green]✓[/bold green] Tailscale node found: {ts_ip}")
+        forget_old_host_keys(hostname, ts_ip)
         console.print("[cyan]Waiting for server to complete reboot and allow VPN SSH...[/cyan]")
 
         # Wait for SSH on that IP

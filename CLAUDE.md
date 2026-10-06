@@ -185,6 +185,7 @@ make format  # runs ruff format only
    - `mint_tailscale_key()` / `tailscale_auth_key()` — single-use Tailscale key via OAuth (reusable-key fallback)
    - `ensure_local_tailscale()` — local Tailscale installed + running (starts it if needed)
    - `get_tailscale_ip()` — poll for VPN IP
+   - `forget_old_host_keys()` — `ssh-keygen -R` the name/IP/MagicDNS name, so a rebuilt box isn't refused
    - `ssh_command()` / `wait_for_ssh()` / `wait_for_cloud_init()` — SSH availability, then `cloud-init status --wait`
      across the final reboot
    - `push_github_token()` — gh + GHCR login over SSH
