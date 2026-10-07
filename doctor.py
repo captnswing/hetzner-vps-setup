@@ -2,9 +2,8 @@
 """Preflight check — verify every prerequisite before provisioning.
 
 Reads credentials from the environment. It does not care *how* they got there:
-populate a plain `.env` (see `.env.example`) and run `make doctor`, or inject them
-with your own secrets manager (the maintainer uses `op-run -- make doctor`). Either
-way doctor only ever inspects `os.environ`, so neither path is imposed on the other.
+a plain `.env` (see `.env.example`, loaded automatically) or a secrets manager that
+injects environment variables (e.g. `op run --env-file=... -- make doctor`).
 
 Exit status is 0 when every required check passes, 1 otherwise.
 """
@@ -32,7 +31,7 @@ console = Console(force_terminal=_force_color)
 
 # PUB_KEY is intentionally not required: setup-vps.py can source the public key from
 # the existing Hetzner key, a local .pub, or by generating a fresh keypair.
-REQUIRED_VARS = ["HCLOUD_TOKEN", "SSH_KEY_NAME"]
+REQUIRED_VARS = ["HCLOUD_TOKEN"]
 
 # Each check appends (name, status, note) where status is "ok" | "fail" | "warn".
 Result = tuple[str, str, str]
@@ -69,7 +68,9 @@ def check_env_vars() -> list[Result]:
         if os.getenv(var):
             results.append((f"${var} set", "ok", ""))
         else:
-            results.append((f"${var} set", "fail", "Set it in .env (cp .env.example .env) or inject via op-run"))
+            results.append(
+                (f"${var} set", "fail", "Set it in .env (cp .env.example .env) — see README → One-time setup")
+            )
     if not os.getenv("GITHUB_TOKEN"):
         results.append(("$GITHUB_TOKEN set", "warn", "Optional — only needed for gh CLI / GHCR auto-login on the box"))
     return results
@@ -154,7 +155,7 @@ def check_hetzner() -> list[Result]:
 
     results: list[Result] = [("Hetzner token valid", "ok", "")]
 
-    key_name = os.getenv("SSH_KEY_NAME")
+    key_name = os.getenv("SSH_KEY_NAME") or "Hetzner Automation Key"
     if key_name:
         try:
             found = client.ssh_keys.get_by_name(key_name)
@@ -200,7 +201,7 @@ def main() -> None:
     if failures:
         console.print(f"[bold red]✗ {failures} check(s) failed[/bold red] — fix the above, then re-run `make doctor`.")
         raise SystemExit(1)
-    msg = "[bold green]✓ All required checks passed[/bold green] — ready to provision: [bold]uv run setup-vps.py[/bold]"
+    msg = "[bold green]✓ All required checks passed[/bold green] — ready to provision: [bold]make provision[/bold]"
     if warnings:
         msg += f" [dim]({warnings} optional warning(s))[/dim]"
     console.print(msg)

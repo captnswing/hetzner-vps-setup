@@ -35,14 +35,18 @@ make install
 cp .env.example .env
 
 # Edit .env with your credentials (see .env.example for inline docs)
-# Required: HCLOUD_TOKEN, SSH_KEY_NAME, and TAILSCALE_OAUTH_CLIENT_ID + _SECRET
+# Required: HCLOUD_TOKEN, TAILSCALE_OAUTH_CLIENT_ID + _SECRET
 #           (or the reusable TAILSCALE_AUTH_KEY as a fallback)
-# Optional: PUB_KEY, GITHUB_TOKEN (gh CLI + Docker GHCR login, pushed over SSH)
+# Optional: GITHUB_TOKEN (gh + GHCR login, pushed over SSH), SSH_KEY_NAME (default
+#           "Hetzner Automation Key"), PUB_KEY
 
 # Preflight check — verifies env, tokens, and tooling before provisioning
-make doctor          # plain-.env users
-# op-run -- make doctor   # maintainer 1Password path (see README "Advanced")
-# op-run --no-masking -- uv run setup-vps.py   # --no-masking: prompts garble when stdout is piped
+make doctor
+make provision       # = uv run setup-vps.py
+
+# Maintainer only: secrets come from 1Password via a gitignored, local .op.env:
+#   op-run -- make doctor
+#   op-run --no-masking -- make provision   # --no-masking: prompts garble when stdout is piped
 
 # Run with uv (handles dependencies automatically)
 uv run setup-vps.py
@@ -146,7 +150,8 @@ make format  # runs ruff format only
 - Load with `python-dotenv`: `load_dotenv(".env")` (done once at module top)
 - Access via `os.getenv()` with defaults where appropriate
 - **Always use empty string default** for optional vars: `os.getenv("VAR", "")` (never allow `None` — it renders as the `"None"` string in templates). See `GITHUB_TOKEN`.
-- Validate **required** variables at startup (`HCLOUD_TOKEN`, `SSH_KEY_NAME`, and Tailscale OAuth client or `TAILSCALE_AUTH_KEY`)
+- Validate **required** variables at startup (`HCLOUD_TOKEN`, and Tailscale OAuth client or `TAILSCALE_AUTH_KEY`).
+  Prefer a sensible default over a new required variable (see `SSH_KEY_NAME`).
 - **No reusable secrets in user_data.** Hetzner's metadata service serves user_data to any process on the box for its
   lifetime. The Tailscale key is minted single-use per server (`mint_tailscale_key()`); `GITHUB_TOKEN` is pushed over
   SSH after cloud-init finishes (`push_github_token()`). Keep new secrets out of the template the same way.
@@ -325,6 +330,11 @@ sudo cat /var/log/cloud-init-output.log
 ```
 
 ## Notes for AI Agents
+
+- **Public repo with users other than the maintainer** (e.g. family members on their own
+  Hetzner/Tailscale accounts). README is written for them: step-by-step, plain `.env`, no
+  maintainer-specific tooling. `op-run`, `.op.env` and the maintainer's 1Password items stay
+  out of README, `.env.example` and user-facing messages.
 
 - This is a **single-file script** — keep it that way unless complexity demands modules
 - **No tests** exist — changes require manual verification via actual provisioning

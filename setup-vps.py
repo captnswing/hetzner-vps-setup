@@ -51,17 +51,20 @@ TAILSCALE_SSH_RULE = f"""{{
 HOSTNAME_RE = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
 
 HCLOUD_TOKEN = os.getenv("HCLOUD_TOKEN")
-SSH_KEY_NAME = os.getenv("SSH_KEY_NAME")
+# Name of the SSH key in Hetzner; created and uploaded on first run if it doesn't exist.
+SSH_KEY_NAME = os.getenv("SSH_KEY_NAME") or "Hetzner Automation Key"
 TAILSCALE_AUTH_KEY = os.getenv("TAILSCALE_AUTH_KEY", "")
 TAILSCALE_OAUTH_CLIENT_ID = os.getenv("TAILSCALE_OAUTH_CLIENT_ID", "")
 TAILSCALE_OAUTH_CLIENT_SECRET = os.getenv("TAILSCALE_OAUTH_CLIENT_SECRET", "")
 PUB_KEY = os.getenv("PUB_KEY")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 
-for var in ["HCLOUD_TOKEN", "SSH_KEY_NAME"]:
-    if not os.getenv(var):
-        console.print(f"[bold red]Error:[/bold red] {var} not found in environment")
-        sys.exit(1)
+if not HCLOUD_TOKEN:
+    console.print(
+        "[bold red]Error:[/bold red] HCLOUD_TOKEN is not set. Copy .env.example to .env, fill it in, "
+        "and run `make doctor` (see README → One-time setup)."
+    )
+    sys.exit(1)
 
 USE_TAILSCALE_OAUTH = bool(TAILSCALE_OAUTH_CLIENT_ID and TAILSCALE_OAUTH_CLIENT_SECRET)
 if not USE_TAILSCALE_OAUTH and not TAILSCALE_AUTH_KEY:
@@ -549,7 +552,7 @@ def main() -> None:
         # it assumes 80 columns and redraws prompts at the wrong place.
         console.print(
             "[yellow]Warning:[/yellow] stdout is piped (e.g. `op run` masking), so the prompts will render garbled. "
-            "Run with `op-run --no-masking --` / `op run --no-masking --`."
+            "With 1Password's `op run`, add `--no-masking`."
         )
 
     # Before any prompt: the hostname check and everything after server creation go through the tailnet.
