@@ -24,7 +24,7 @@ help:  ## Show this help
 	     /^[a-zA-Z0-9_.\/-]+:.*## / { printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2 }' \
 	     $(MAKEFILE_LIST)
 	@printf '\nScope format/lint with FILE=<paths>, e.g. make lint FILE=setup-vps.py\n'
-	@printf 'Provision with: uv run setup-vps.py\n'
+	@printf 'First time? Follow README → One-time setup, then: make doctor && make provision\n'
 
 # Check if uv is installed, install it if not
 .PHONY: ensure-uv
@@ -59,5 +59,8 @@ lint: format  ## Format, then lint + autofix with ruff (FILE=<paths> to scope)
 
 .PHONY: doctor
 doctor: install  ## Preflight check: env, tokens and tooling
-	# Plain-.env users: `make doctor`. Maintainer: `op-run -- make doctor`.
 	uv run python doctor.py
+
+.PHONY: provision
+provision: install  ## Create a new server (interactive)
+	uv run setup-vps.py

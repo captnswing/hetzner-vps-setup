@@ -1,230 +1,258 @@
 # Hetzner VPS Setup
 
-Automated provisioning of hardened Ubuntu VPS servers on Hetzner Cloud with Tailscale VPN, Docker, and developer tools.
+One command that creates a hardened Ubuntu server on [Hetzner Cloud](https://www.hetzner.com/cloud),
+reachable only through your private [Tailscale](https://tailscale.com/) network, with Docker,
+Claude Code and other developer tools ready to use.
 
-## Quick start
+- **Private by default:** the server has no public SSH. You reach it over Tailscale, from your
+  laptop or your phone.
+- **A few minutes per server**, after a one-time setup of about 20 minutes.
+- **Costs** what Hetzner charges for the server: roughly €7–25/month for the small types.
+  Delete it when you're done and the charges stop.
+
+Works from **macOS or Linux**.
+
+## One-time setup
+
+You need a Hetzner account and a Tailscale account. Tailscale is free for personal use.
+
+### 1. Get the code
 
 ```bash
-brew bundle             # installs uv + tailscale (or install them yourself)
-open -a Tailscale       # sign in to your tailnet
-make install            # set up the Python environment
-cp .env.example .env    # then fill in your Hetzner + Tailscale credentials
-make doctor             # verify everything is ready
-uv run setup-vps.py     # provision
+git clone https://github.com/captnswing/hetzner-vps-setup.git
+cd hetzner-vps-setup
 ```
 
-First time through, read **What you need** below for the accounts, credentials, and
-the one-time Tailscale tag setup. `make doctor` will tell you exactly what's missing.
+### 2. Install the tools
 
-## What you need
-
-### Accounts
-
-- **Hetzner Cloud** — [console.hetzner.cloud](https://console.hetzner.cloud/)
-- **Tailscale** — [login.tailscale.com](https://login.tailscale.com/) (free for personal use)
-
-### Local tools
-
-`brew bundle` installs both, or install manually:
-
-- **uv** — `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- **Tailscale CLI** — `brew install tailscale`, then `open -a Tailscale` to sign in
-  and `tailscale status` to verify.
-
-### Credentials → `.env`
-
-Copy the template and fill it in — `.env` is gitignored and loaded automatically
-(no need to `source` it):
+**macOS** (with [Homebrew](https://brew.sh/)):
 
 ```bash
+brew bundle            # installs uv and the Tailscale app
+```
+
+**Linux:**
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh    # uv (runs the Python script)
+curl -fsSL https://tailscale.com/install.sh | sh   # Tailscale
+```
+
+Then, on either:
+
+```bash
+make install
 cp .env.example .env
 ```
 
-1. **`HCLOUD_TOKEN`** — Hetzner API token (Read & Write):
-   [console.hetzner.cloud](https://console.hetzner.cloud/) → Security → API Tokens.
-2. **`SSH_KEY_NAME`** — the name your SSH key has (or will have) in Hetzner; default
-   `Hetzner Automation Key`. **You don't have to pre-create the key:** if none by that
-   name exists, `setup-vps.py` offers to upload `$PUB_KEY`, an existing
-   `~/.ssh/Hetzner_Automation_Key.pub`, or to generate a fresh keypair for you.
-   - **`PUB_KEY`** (optional) — public-key text to upload if the key must be created.
-3. **`TAILSCALE_OAUTH_CLIENT_ID` + `TAILSCALE_OAUTH_CLIENT_SECRET`** — a Tailscale OAuth
-   client that `setup-vps.py` uses to mint a **single-use, 1-hour** auth key for each new
-   server. One-time setup:
-   - Define the tag owner once in your ACL
-     ([login.tailscale.com/admin/acls](https://login.tailscale.com/admin/acls)):
-     ```json
-     "tagOwners": { "tag:vps": ["autogroup:admin"] }
-     ```
-   - Create the OAuth client: admin console → **Settings → Trust credentials** →
-     **Credential** → **OAuth**; scope **Auth Keys → Write**, tag `tag:vps`. The secret
-     is shown only once. Tagged nodes get ACL scoping and skip
-     the 180-day key-expiry re-auth; the nodes are persistent (not ephemeral).
-   - Allow yourself to SSH in. The servers run **Tailscale SSH**, which authenticates by
-     tailnet identity and policy, not SSH keys, and Tailscale's default SSH rule only
-     covers your own untagged devices. Under Access controls → **Tailscale SSH** →
-     **Add rule** (or in the policy JSON's `"ssh"` array):
-     ```json
-     {
-       "action": "accept",
-       "src":    ["you@example.com"],
-       "dst":    ["tag:vps"],
-       "users":  ["sysadmin"]
-     }
-     ```
-     Use your own login rather than `autogroup:member` if others are in your tailnet —
-     `sysadmin` has passwordless sudo. `accept`, not `check`: check mode needs a browser
-     re-auth that the provisioner's non-interactive SSH can't do. Without this rule the
-     provisioner reports the refusal at step 3.
-   - **Why not a plain auth key:** the key is written into the server's cloud-init
-     user_data, which Hetzner's metadata service (`169.254.169.254`) serves to any process
-     on the box for its whole lifetime. A reusable key read from there lets anyone join
-     devices to your tailnet as `tag:vps`; a single-use key is already spent.
-   - **Fallback:** `TAILSCALE_AUTH_KEY` (reusable, `tag:vps`, non-ephemeral, from
-     [admin/settings/keys](https://login.tailscale.com/admin/settings/keys)) still works
-     if the OAuth client is unset; `doctor` and `setup-vps.py` warn about it.
+You'll fill in `.env` over the next steps. It is gitignored, so your tokens are never committed.
 
-`GITHUB_TOKEN` is optional (gh CLI / GHCR login on the box). It is sent over SSH once
-the server is up and never written into user_data.
+### 3. Hetzner: create an API token
 
-> **Advanced (maintainer's setup):** instead of a `.env`, secrets can be injected at
-> point-of-use from 1Password via `op-run` (a personal wrapper) reading the committed
-> `.op.env`. That file holds only 1Password *references* (`op://vault/item/field`),
-> never the secrets themselves, so it's safe to commit; `op run` resolves them at
-> runtime for that single command (see the
-> [1Password `op run` docs](https://developer.1password.com/docs/cli/secrets-environment-variables/)).
-> This is personal and optional — if you don't already use that workflow, the `.env`
-> path above is all you need. Run any command with secrets injected as
-> `op-run -- <cmd>` (e.g. `op-run -- make doctor`). Provision with
-> `op-run --no-masking -- uv run setup-vps.py`: masking pipes stdout, and the interactive
-> prompts can't size or position themselves through a pipe, so they render garbled.
-> The script prints no secrets.
+1. Sign in at [console.hetzner.cloud](https://console.hetzner.cloud/) and open (or create) a
+   **project**. Servers are created in the project the token belongs to.
+2. In the project, go to **Security → API tokens → Generate API token**, with
+   **Read & Write** permission.
+3. Put it in `.env`:
+   ```
+   HCLOUD_TOKEN=...
+   ```
 
-## Provision
+### 4. Tailscale: join your computer, allow the servers, create an OAuth client
+
+**a. Put your computer on your tailnet.** On macOS, open the Tailscale app and sign in. On
+Linux, run `sudo tailscale up`. Check with `tailscale status`.
+
+**b. Edit your tailnet policy.** Go to
+[login.tailscale.com/admin/acls](https://login.tailscale.com/admin/acls), switch to the
+**JSON editor**, and add two things:
+
+- A `tag:vps` tag for the servers. Add to `"tagOwners"`, creating the section if it doesn't
+  exist:
+  ```json
+  "tagOwners": {
+    "tag:vps": ["autogroup:admin"]
+  },
+  ```
+- Permission for **you** to SSH into those servers. Add this rule to the `"ssh"` list,
+  next to the rule that is already there, with your own Tailscale login (the email shown
+  at the top right of the admin console):
+  ```json
+  {
+    "action": "accept",
+    "src":    ["you@example.com"],
+    "dst":    ["tag:vps"],
+    "users":  ["sysadmin"]
+  }
+  ```
+
+Save. Tailscale checks the JSON and tells you if a comma is missing.
+
+> Why your login and not everyone: if other people are in your tailnet, `autogroup:member`
+> would let them into your servers as `sysadmin`, which has passwordless sudo. Use
+> `"accept"`, not `"check"`: check mode asks for a browser login that the script can't do.
+
+**c. Create an OAuth client.** In the admin console, go to **Settings → Trust credentials →
+Credential → OAuth**:
+
+- Scope: **Auth Keys → Write**, nothing else.
+- Tags: **`tag:vps`**. This only works after step b, because the tag must exist.
+- Copy the client ID and secret into `.env` straight away. The secret is shown only once.
+  ```
+  TAILSCALE_OAUTH_CLIENT_ID=...
+  TAILSCALE_OAUTH_CLIENT_SECRET=...
+  ```
+
+The script uses this client to create a **single-use key** for each new server, valid for
+one hour. Once the server has joined, the key is useless, even though it stays readable
+on the server.
+
+### 5. Optional: GitHub token
+
+If you want `gh` and GitHub's container registry (`ghcr.io`) logged in on the server, create a
+**classic** token at [github.com/settings/tokens](https://github.com/settings/tokens)
+(Tokens (classic) → Generate new token) with scopes `repo`, `read:org` and `read:packages`.
+Put it in `.env` as `GITHUB_TOKEN=...`. Leave it blank to skip.
+
+### 6. Check everything
 
 ```bash
-make doctor             # preflight: tools, credentials, valid token, SSH key
-uv run setup-vps.py
+make doctor
 ```
 
-`doctor` reports exactly what's missing for anything not ready. The provisioner then
-prompts for:
+It checks the tools, each value in `.env`, the Hetzner token and the Tailscale OAuth
+client, and says exactly what to fix. It can't check the policy rules from step 4b.
 
-- **Hostname** (default: `hardened-host`)
-- **Location** (default: `hel1`; only locations with orderable server types are offered)
-- **Server type** (only types available at that location right now, cheapest first, with monthly cost)
+## Create a server
 
-and prints the commands to connect when done.
+```bash
+make provision
+```
+
+It asks for:
+
+- **Hostname** (default `hardened-host`). It must be new in both your Hetzner project and
+  your tailnet.
+- **Location** (default `hel1`, Helsinki). Only locations where a server can be ordered
+  right now are offered.
+- **Server type**, cheapest first, with the monthly price. The list includes ARM
+  types (shown as `arm`); they work too.
+
+It shows a summary and waits for your confirmation before creating anything. It then
+waits for the server to join your tailnet and finish its setup (a few minutes, a bit longer
+for ARM), and prints how to connect.
+
+On first run, if your Hetzner project has no SSH key named `Hetzner Automation Key`, the
+script offers to create one in `~/.ssh/Hetzner_Automation_Key` and upload it. Hetzner puts
+it on the server's root account (without one, it would email you a root password). You won't
+need it to connect, because Tailscale handles login.
 
 ## Connect
 
 ```bash
 ssh sysadmin@<hostname>
+mosh sysadmin@<hostname>     # survives network changes and sleep; good on a phone
 ```
 
-Tailscale's MagicDNS resolves the hostname on every device in your tailnet, and
-Tailscale SSH lets you in by tailnet identity, so you need no key and no
-`~/.ssh/config` entry. To drop the `sysadmin@`, add one wildcard block to
-`~/.ssh/config` that matches your hostnames:
+Tailscale's MagicDNS resolves the hostname from any device on your tailnet, and Tailscale
+SSH logs you in by your Tailscale identity, so there is no key or `~/.ssh/config` entry to
+manage. To type just `ssh <hostname>`, add this once to `~/.ssh/config`:
 
 ```
 Host hardened-*
   User sysadmin
 ```
 
-### From your phone (Mosh + QR)
+From a phone: install Tailscale and an SSH app (Termius, Blink, …), then scan the QR code the
+script prints. It encodes `ssh://sysadmin@<hostname>`.
 
-The provisioner prints a **QR code** encoding `ssh://sysadmin@<hostname>` — scan
-it with any SSH client (Termius, Blink, …) to connect; the QR is app-agnostic, it's
-just a standard SSH URI.
+On the server:
 
-For a connection that survives network changes and sleep (ideal on mobile), use
-**Mosh** (pre-installed):
+- **Claude Code:** run `claude` and log in the first time.
+- **Share a dev server:** `publish 3000` gives `localhost:3000` a temporary public
+  `https://….trycloudflare.com` URL through an outbound Cloudflare tunnel, without opening
+  any port. Ctrl+C stops it.
+- **Ghostty users:** add `shell-integration-features = ssh-terminfo,ssh-env` to your Ghostty
+  config. Otherwise `htop`, `vim` and `tmux` complain about an unknown terminal, because
+  Ubuntu 24.04 doesn't know Ghostty yet.
 
-```bash
-mosh sysadmin@<hostname>
-```
+## Delete a server
 
-Mosh rides the Tailscale tunnel (no public ports are opened — UFW already allows all
-traffic on `tailscale0`).
+1. In the Hetzner console, open the server → **Delete**. Or, with the
+   [`hcloud` CLI](https://github.com/hetznercloud/cli): `hcloud server delete <hostname>`.
+   Charges stop once it's deleted.
+2. Remove it from your tailnet:
+   [login.tailscale.com/admin/machines](https://login.tailscale.com/admin/machines) →
+   the server → **⋯ → Remove**. Until you do, the script won't reuse the name.
 
-### Web preview (`publish`)
+## What's on the server
 
-To share a locally-running dev server without opening any inbound port, run on the
-box:
+- **Ubuntu 24.04**, user `sysadmin` with passwordless sudo and Docker access, timezone
+  Europe/Berlin, 2 GB swap.
+- **Tools:** git, gh, curl, wget, jq, vim, tmux, ripgrep, fd, fzf, mosh, htop, iotop, ncdu,
+  build-essential.
+- **Docker** with docker-compose, log rotation (3 × 10 MB) and a weekly cleanup of unused
+  images.
+- **Claude Code** and **herdr** (a terminal multiplexer for coding agents, already wired to
+  Claude Code), plus `cloudflared` for `publish`.
+- **Shell:** large timestamped history, fzf on Ctrl+R (history), Ctrl+T (files) and Alt+C
+  (folders).
 
-```bash
-publish 3000        # → ephemeral public https://<random>.trycloudflare.com URL
-```
+## Security
 
-This opens an **outbound** Cloudflare quick tunnel (`cloudflared`) to
-`localhost:3000`. Ctrl+C to stop. The URL is random and ephemeral; a stable named
-URL would need a Cloudflare account (see `ROADMAP.md`).
-
-### Ghostty Terminal Support
-
-See https://ghostty.org/docs/help/terminfo. In `~/.config/ghostty/config`, set
-
-```
-shell-integration-features = ssh-terminfo,ssh-env
-```
-
-Ubuntu 24.04's ncurses predates the `xterm-ghostty` entry, so without this `htop`, `vim`,
-`tmux` etc. fail with "missing or unsuitable terminal". On the first `ssh` from a Ghostty
-shell it installs the entry into `~/.terminfo` on the server (no root needed), and falls
-back to `xterm-256color` if that fails. mosh sets its own `TERM` and needs nothing.
-
-## What's Installed
-
-### System
-
-- **OS**: Ubuntu 24.04 LTS
-- **User**: `sysadmin` (passwordless sudo, docker group)
-- **Timezone**: Europe/Berlin
-- **Swap**: 2GB
-
-### Packages
-
-- **Tools**: git, curl, wget, jq, vim, tmux, ripgrep, fzf, gh
-- **Remote/mobile**: mosh (roaming SSH), Tailscale SSH
-- **Monitoring**: htop, iotop, ncdu
-- **Docker**: docker.io, docker-compose-v2
-- **Security**: ufw (firewall), unattended-upgrades
-- **VPN**: Tailscale (with SSH enabled, node tagged `tag:vps`)
-- **Dev**: Claude Code, herdr (agent multiplexer, Claude integration pre-installed), `cloudflared` + the `publish <port>` helper
-
-### Shell Features
-
-- **History**: 50k commands in memory, 100k on disk, timestamped
-- **fzf shortcuts**:
-    - `Ctrl+R` - Fuzzy command history search
-    - `Ctrl+T` - File finder
-    - `Alt+C` - Directory finder
-
-### Security
-
-- **UFW**: Only 41641/udp (Tailscale) open publicly
-- **Metadata service**: blocked for Docker containers (`DOCKER-USER` rule)
-- **Docker ports**: `-p` publishes to `127.0.0.1` by default (Docker bypasses UFW); bind a
-  host IP explicitly to expose one, e.g. `-p <tailscale-ip>:8080:80`
-- **Tailscale SSH**: VPN-only access, no public SSH
-- **Auto-updates**: Security patches via unattended-upgrades
-- **Docker logs**: Auto-rotation (3 × 10MB max)
+- **No public SSH.** The firewall (UFW) allows only Tailscale's own port (41641/udp) from the
+  internet; everything else arrives over the `tailscale0` interface.
+- **Docker ports stay private.** `-p 8080:80` binds to `127.0.0.1`, because Docker's own
+  firewall rules would otherwise bypass UFW. To expose a port on your tailnet, bind the
+  server's Tailscale IP: `-p <tailscale-ip>:8080:80`.
+- **No reusable secrets on the server.** Hetzner serves a server's setup data
+  (cloud-init "user data") to any process on it for its whole lifetime. So the Tailscale
+  key in it is single-use, the GitHub token is sent over SSH instead, and containers are
+  blocked from the metadata address (`169.254.169.254`).
+- **Automatic security updates** via unattended-upgrades.
 
 ## Troubleshooting
 
-**SSH key**: if no Hetzner key matches `SSH_KEY_NAME`, the script offers to create &
-upload one. If you already have a key under a *different* name, set `SSH_KEY_NAME` to
-match it exactly (names are case-sensitive).
+**`make doctor` fails** — each failing line says what to fix. Run it again until it passes.
 
-**Hostname already taken**: Choose different name (unique per Hetzner account).
+**"Tailscale SSH is refused by your tailnet policy"** (step 3 of a run) — the SSH rule from
+setup step 4b is missing or has the wrong login. Add it; the script keeps waiting and
+continues once SSH works.
 
-**Tailscale IP not found**: Ensure `tailscale status` shows your tailnet is active.
+**"is already a node in your tailnet"** — a deleted server with that name is still in your
+tailnet. Remove it in the admin console (see [Delete a server](#delete-a-server)) or pick
+another name.
+
+**Tailscale isn't running on your computer** — on macOS the script starts it for you,
+launching the app if needed. On Linux, run `sudo tailscale up` yourself. Either way, if
+Tailscale isn't running or needs a login, the script stops before creating anything.
+
+**The prompts look garbled** — your terminal's output is being piped, for example through a
+secrets manager that masks output. See below.
+
+**A run stopped halfway** — a server that was already created keeps running (and costing
+money). Delete it as described above, or connect to it and check
+`sudo cloud-init status --long`.
+
+## Using a secrets manager instead of `.env`
+
+The scripts read plain environment variables, so any tool that injects them works instead of
+a `.env` file. With 1Password, for example, keep `op://` references in a `.op.env` file (it is
+gitignored, like `.env`) and run:
+
+```bash
+op run --env-file=.op.env -- make doctor
+op run --no-masking --env-file=.op.env -- make provision
+```
+
+Use `--no-masking` for `make provision`: masking pipes the output, and the interactive prompts
+can't draw correctly through a pipe. The script never prints secrets.
 
 ## Files
 
-- `setup-vps.py` - Provisioning script
-- `doctor.py` - Preflight check (`make doctor`)
-- `cloud-config.yaml.tmpl` - Cloud-init template
-- `Brewfile` - Local tools (`brew bundle`)
-- `.env.example` - Environment variable template (copy to `.env`)
-- `.op.env` - Maintainer's 1Password references (optional; ignore if not using `op-run`)
+- `setup-vps.py` — creates and sets up a server (`make provision`)
+- `doctor.py` — checks your setup (`make doctor`)
+- `cloud-config.yaml.tmpl` — what gets installed and configured on the server
+- `.env.example` — template for your `.env`
+- `Brewfile` — macOS tools for `brew bundle`
+- `ROADMAP.md` — ideas considered and deferred

@@ -1,0 +1,9 @@
+# Secrets — never commit
+.env
+.op.env
+
+# Python / tooling
+.venv/
+__pycache__/
+*.pyc
+.ruff_cache/
