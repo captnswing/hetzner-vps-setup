@@ -204,7 +204,9 @@ On the server:
   internet; everything else arrives over the `tailscale0` interface.
 - **Docker ports stay private.** `-p 8080:80` binds to `127.0.0.1`, because Docker's own
   firewall rules would otherwise bypass UFW. To expose a port on your tailnet, bind the
-  server's Tailscale IP: `-p <tailscale-ip>:8080:80`.
+  server's Tailscale IP: `-p <tailscale-ip>:8080:80`. Even an explicit `-p 0.0.0.0:80:80`
+  stays closed to the internet: new connections arriving on the public interface are
+  dropped before they reach a container.
 - **No reusable secrets on the server.** Hetzner serves a server's setup data
   (cloud-init "user data") to any process on it for its whole lifetime. So the Tailscale
   key in it is single-use, the GitHub token is sent over SSH instead, and containers are
