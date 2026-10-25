@@ -70,6 +70,30 @@ write_files:
       [Service]
       ExecStartPost=/bin/sh -c 'iptables -C DOCKER-USER -d 169.254.169.254 -j DROP 2>/dev/null || iptables -I DOCKER-USER -d 169.254.169.254 -j DROP'
 
+  # The 127.0.0.1 default above only covers ports published without a host IP; an explicit
+  # `-p 0.0.0.0:80:80` would still be public. Drop new connections arriving on the public
+  # interface before they reach a container, keeping replies to containers' own outbound
+  # traffic. Tailscale (tailscale0) and the cloudflared tunnel are unaffected.
+  - path: /usr/local/sbin/docker-block-public
+    permissions: '0755'
+    content: |
+      #!/bin/sh
+      set -e
+      wan=$$(ip -o route show default | awk '{print $$5; exit}')
+      if [ -z "$$wan" ]; then
+        echo "docker-block-public: no default route, cannot find the public interface" >&2
+        exit 1
+      fi
+      # -I inserts at the top, so the RETURN for replies lands ahead of the DROP.
+      iptables -C DOCKER-USER -i "$$wan" -j DROP 2>/dev/null \
+        || iptables -I DOCKER-USER -i "$$wan" -j DROP
+      iptables -C DOCKER-USER -i "$$wan" -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN 2>/dev/null \
+        || iptables -I DOCKER-USER -i "$$wan" -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+  - path: /etc/systemd/system/docker.service.d/block-public.conf
+    content: |
+      [Service]
+      ExecStartPost=/usr/local/sbin/docker-block-public
+
   # Add automatic Docker cleanup cron
   - path: /etc/cron.weekly/docker-cleanup
     permissions: '0755'
