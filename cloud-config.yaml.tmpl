@@ -163,7 +163,7 @@ runcmd:
 
   # Tailscale VPN Setup (node tagged for ACL scoping + no 180-day key-expiry re-auth)
   - curl -fsSL https://tailscale.com/install.sh | sh
-  - tailscale up --authkey=${tailscale_key} --ssh --accept-routes --advertise-tags=tag:vps
+  - tailscale up --authkey=${tailscale_key} --ssh --advertise-tags=tag:vps
 
   # cloudflared — powers `publish <port>` (ephemeral outbound tunnel, no inbound ports)
   - |
