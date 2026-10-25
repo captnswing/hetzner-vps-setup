@@ -323,6 +323,33 @@ def _wait_for_local_tailscale(done, timeout: int = 30) -> str | None:
     return state
 
 
+def _tailnet_lock_status() -> dict:
+    """`tailscale lock status --json` for this machine, or {} if it can't be read."""
+    try:
+        result = subprocess.run(["tailscale", "lock", "status", "--json"], capture_output=True, text=True, timeout=10)
+        return json.loads(result.stdout)
+    except (subprocess.SubprocessError, ValueError):
+        return {}
+
+
+def _is_tailnet_lock_signer() -> bool:
+    """Whether this machine's Tailnet Lock key is one of the tailnet's trusted signing keys."""
+    status = _tailnet_lock_status()
+    return status.get("PublicKey") in {k.get("Public") for k in status.get("TrustedKeys") or []}
+
+
+def sign_for_tailnet_lock(key: str) -> str:
+    """Pre-sign the auth key when Tailnet Lock is on; a node joining with an unsigned key is locked out."""
+    if not _tailnet_lock_status().get("Enabled"):
+        return key
+    result = subprocess.run(["tailscale", "lock", "sign", key], capture_output=True, text=True, timeout=15)
+    if result.returncode != 0:
+        console.print(f"[bold red]Failed to sign the auth key for Tailnet Lock:[/bold red] {result.stderr.strip()}")
+        sys.exit(1)
+    console.print("[bold green]✓[/bold green] Signed the auth key for Tailnet Lock")
+    return result.stdout.strip()
+
+
 def ensure_local_tailscale() -> None:
     """Make sure this machine is on the tailnet, starting Tailscale if needed.
 
@@ -356,6 +383,13 @@ def ensure_local_tailscale() -> None:
         )
         sys.exit(1)
     console.print("[bold green]✓[/bold green] Tailscale is running on this machine")
+    if _tailnet_lock_status().get("Enabled") and not _is_tailnet_lock_signer():
+        console.print(
+            "[bold red]Error:[/bold red] Tailnet Lock is on and this machine is not a signing node, so it "
+            "can't sign the new server's auth key — run the script from a signing node, or add this one with "
+            "`tailscale lock add <its tlpub key>` on a node that is"
+        )
+        sys.exit(1)
 
 
 def get_tailscale_ip(hostname: str, timeout: int = 300) -> str | None:
@@ -604,7 +638,7 @@ def main() -> None:
 
     # Load cloud-init configuration
     config = Template((Path(__file__).parent / "cloud-config.yaml.tmpl").read_text())
-    tailscale_key = tailscale_auth_key(hostname)
+    tailscale_key = sign_for_tailnet_lock(tailscale_auth_key(hostname))
 
     # Create server
     console.print(f"\n[bold cyan]Creating server: {hostname}[/bold cyan]")

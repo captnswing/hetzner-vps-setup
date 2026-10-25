@@ -227,6 +227,13 @@ another name.
 launching the app if needed. On Linux, run `sudo tailscale up` yourself. Either way, if
 Tailscale isn't running or needs a login, the script stops before creating anything.
 
+**"Tailnet Lock is on and this machine is not a signing node"** — with
+[Tailnet Lock](https://tailscale.com/kb/1226/tailnet-lock) enabled, a new server can only
+join if a signing node signs its auth key. The script does that with `tailscale lock sign`,
+so it has to run on a signing node. Run it from one, or make this machine one with
+`tailscale lock add <its tlpub key>` on a node that already is (`tailscale lock status`
+shows a machine's key). Without Tailnet Lock the script skips this step.
+
 **The prompts look garbled** — your terminal's output is being piped, for example through a
 secrets manager that masks output. See below.
 
