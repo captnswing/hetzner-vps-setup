@@ -92,6 +92,14 @@ Save. Tailscale checks the JSON and tells you if a comma is missing.
 > would let them into your servers as `sysadmin`, which has passwordless sudo. Use
 > `"accept"`, not `"check"`: check mode asks for a browser login that the script can't do.
 
+> **Don't give `tag:vps` any access of its own.** The server runs an AI agent and Docker and
+> can publish ports to the internet, so treat it as the least trusted machine on your
+> tailnet. You reach it; it never needs to reach you. If your policy still has the default
+> allow-all grant (`"src": ["*"], "dst": ["*"]`), replace it with
+> `{"src": ["autogroup:member"], "dst": ["*"], "ip": ["*"]}`. Your own devices keep full
+> access, and tagged servers can't open connections to anything else on the tailnet. If a
+> server ever needs one service (say, a git server), add a grant for just that port.
+
 **c. Create an OAuth client.** In the admin console, go to **Settings → Trust credentials →
 Credential → OAuth**:
 
